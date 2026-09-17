@@ -1,11 +1,11 @@
 """
 ================================================================
-CONVICTION SCANNER v7 — Render Edition
+CONVICTION SCANNER v7 — Final Render Edition
 ================================================================
 """
 
 # ================================================================
-# BAGIAN 1: KONFIGURASI
+# BAGIAN 1: KONFIGURASI (isi di Render → Environment)
 # ================================================================
 import os
 
@@ -48,7 +48,6 @@ import traceback
 import requests
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, asdict
-from typing import Optional
 
 from flask import Flask, request, jsonify
 
@@ -67,26 +66,26 @@ def mask(v):
     return v[:4] + "..." + v[-4:]
 
 log.info("=" * 65)
-log.info("🔍 STATUS KONFIGURASI")
+log.info("STATUS KONFIGURASI")
 log.info("=" * 65)
-log.info(f"  ⚠️  WAJIB:")
-log.info(f"      TG_BOT_TOKEN    : {mask(TG_BOT_TOKEN)}")
-log.info(f"      TG_CHAT_ID      : {TG_CHAT_ID or '(kosong)'}")
-log.info(f"  📝 OPSIONAL:")
-log.info(f"      CABALSPY        : {mask(CABALSPY_API_KEY)}")
-log.info(f"      ADANOS          : {mask(ADANOS_API_KEY)}")
-log.info(f"      SANTIMENT       : {mask(SANTIMENT_API_KEY)}")
-log.info(f"      VYBE            : {mask(VYBE_API_KEY)}")
-log.info(f"      MOBULA          : {mask(MOBULA_API_KEY)}")
-log.info(f"      MADEONSOL       : {mask(MADEONSOL_API_KEY)}")
-log.info(f"      TNT_RISK        : {mask(TNT_RISK_API_KEY)}")
-log.info(f"      GOPLUS          : {mask(GOPLUS_API_KEY)}")
-log.info(f"      CIELO           : {mask(CIELO_API_KEY)}")
-log.info(f"  ✅ PUBLIC: Binance Web3, free-crypto-news, Gecko, RugCheck")
+log.info(f"  WAJIB:")
+log.info(f"    TG_BOT_TOKEN    : {mask(TG_BOT_TOKEN)}")
+log.info(f"    TG_CHAT_ID      : {TG_CHAT_ID or '(kosong)'}")
+log.info(f"  OPSIONAL:")
+log.info(f"    CABALSPY        : {mask(CABALSPY_API_KEY)}")
+log.info(f"    ADANOS          : {mask(ADANOS_API_KEY)}")
+log.info(f"    SANTIMENT       : {mask(SANTIMENT_API_KEY)}")
+log.info(f"    VYBE            : {mask(VYBE_API_KEY)}")
+log.info(f"    MOBULA          : {mask(MOBULA_API_KEY)}")
+log.info(f"    MADEONSOL       : {mask(MADEONSOL_API_KEY)}")
+log.info(f"    TNT_RISK        : {mask(TNT_RISK_API_KEY)}")
+log.info(f"    GOPLUS          : {mask(GOPLUS_API_KEY)}")
+log.info(f"    CIELO           : {mask(CIELO_API_KEY)}")
 log.info("=" * 65)
 
 if not TG_BOT_TOKEN or not TG_CHAT_ID:
-    log.warning("⚠️  TG_BOT_TOKEN atau TG_CHAT_ID KOSONG!")
+    log.warning("TG_BOT_TOKEN atau TG_CHAT_ID KOSONG!")
+    log.warning("Bot tidak bisa kirim alert.")
 
 # ================================================================
 # BAGIAN 4: ENDPOINT
@@ -263,7 +262,7 @@ def send_telegram(msg):
         log.warning(f"[TG] {e}")
 
 # ================================================================
-# BAGIAN 8: SNIFFER (SECURITY)
+# BAGIAN 8: SNIFFER
 # ================================================================
 def sniffer_rugcheck(token):
     def _call():
@@ -366,7 +365,7 @@ def fetch_insider_tracker(token):
     return result
 
 # ================================================================
-# BAGIAN 10: WHALE FLOW (Binance Web3)
+# BAGIAN 10: WHALE FLOW
 # ================================================================
 def fetch_binance_smart_money(token):
     result = {"sm_count": 0, "sm_direction": "neutral"}
@@ -427,7 +426,7 @@ def fetch_whale_flow(token):
     return result
 
 # ================================================================
-# BAGIAN 11: NARRATIVE (SOCIAL)
+# BAGIAN 11: NARRATIVE
 # ================================================================
 def fetch_fcn_sentiment(symbol):
     def _call():
@@ -555,7 +554,7 @@ def detect_euphoria(snap):
     return result
 
 # ================================================================
-# BAGIAN 13: CONVICTION SCORE
+# BAGIAN 13: CONVICTION
 # ================================================================
 def calculate_conviction(snap, insider, whale, narrative, euphoria):
     score = 0.0
@@ -638,7 +637,7 @@ def parse_pool(pool):
         return None
 
 # ================================================================
-# BAGIAN 15: TOKEN PROCESSING
+# BAGIAN 15: PROCESS TOKEN
 # ================================================================
 tracked = {}
 tracked_lock = threading.Lock()
@@ -647,7 +646,7 @@ def process_token(snap):
     budget = TimeBudget(20, f"token:{snap.name[:20]}")
     snap = run_sniffer(snap)
     if snap.honeypot:
-        log.info(f"🚫 HONEYPOT: {snap.name} ({snap.token})")
+        log.info(f"HONEYPOT: {snap.name} ({snap.token})")
         return
     if budget.check("sniffer"): return
     insider = fetch_insider_tracker(snap.token)
@@ -671,32 +670,32 @@ def process_token(snap):
 def send_alert(snap, conviction, insider, whale, narrative, euphoria):
     dex_url = f"https://dexscreener.com/solana/{snap.token}"
     flags = []
-    if snap.mint_authority: flags.append("⚠️ Mint authority aktif")
-    if snap.freeze_authority: flags.append("⚠️ Freeze authority aktif")
-    if not snap.lp_burned: flags.append("⚠️ LP belum burn")
-    if snap.insider_clusters > 3: flags.append(f"⚠️ {snap.insider_clusters} insider clusters")
-    if snap.same_first_funder: flags.append("⚠️ Same first funder")
-    if whale.get("bundle_detected"): flags.append("⚠️ Bundle detected")
+    if snap.mint_authority: flags.append("Mint authority aktif")
+    if snap.freeze_authority: flags.append("Freeze authority aktif")
+    if not snap.lp_burned: flags.append("LP belum burn")
+    if snap.insider_clusters > 3: flags.append(f"{snap.insider_clusters} insider clusters")
+    if snap.same_first_funder: flags.append("Same first funder")
+    if whale.get("bundle_detected"): flags.append("Bundle detected")
     if euphoria["euphoria_score"] > 50:
-        flags.append(f"⚠️ Euphoria {euphoria['euphoria_score']:.0f}/100")
-    flag_text = "\n".join(flags) if flags else "✅ Tidak ada red flag utama"
+        flags.append(f"Euphoria {euphoria['euphoria_score']:.0f}/100")
+    flag_text = "\n".join(flags) if flags else "Tidak ada red flag utama"
     msg = (
-        f"🎯 *CONVICTION ALERT v7* — Skor {conviction}/100\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🪙 *{snap.name}* (`{snap.symbol}`)\n📝 `{snap.token}`\n\n"
-        f"💰 Harga: `${snap.price:.8f}`\n"
-        f"💧 Likuiditas: `${snap.liquidity:,.0f}`\n"
-        f"📊 Volume 1H: `${snap.volume_1h:,.0f}`\n"
-        f"📈 Perubahan 1H: `{snap.price_change_1h:+.1f}%`\n"
-        f"👥 Buyer/Seller 1H: `{snap.buyers_1h}/{snap.sellers_1h}`\n\n"
-        f"🛡️ *Security*: RugCheck `{snap.rugcheck_score}/100`\n\n"
-        f"🐳 *Whale*: `{whale['whale_count']}` smart money | "
-        f"Top10 `{whale['top10_pct']:.1f}%`\n\n"
-        f"📰 *Narrative*: Stage `{narrative.get('narrative_stage','unknown')}` | "
-        f"Sent `{narrative.get('sentiment',0):+.2f}`\n\n"
-        f"🌡️ Euphoria: `{euphoria['euphoria_score']:.0f}/100`\n\n"
-        f"*Red Flags:*\n{flag_text}\n\n"
-        f"🔎 [DEXScreener]({dex_url})"
+        f"CONVICTION ALERT v7 - Skor {conviction}/100\n"
+        f"=====================================\n"
+        f"Nama: {snap.name} ({snap.symbol})\n"
+        f"Token: {snap.token}\n\n"
+        f"Harga: ${snap.price:.8f}\n"
+        f"Likuiditas: ${snap.liquidity:,.0f}\n"
+        f"Volume 1H: ${snap.volume_1h:,.0f}\n"
+        f"Perubahan 1H: {snap.price_change_1h:+.1f}%\n"
+        f"Buyer/Seller: {snap.buyers_1h}/{snap.sellers_1h}\n\n"
+        f"Security - RugCheck: {snap.rugcheck_score}/100\n"
+        f"Whale: {whale['whale_count']} smart money | Top10: {whale['top10_pct']:.1f}%\n"
+        f"Narrative: {narrative.get('narrative_stage','unknown')} | "
+        f"Sent: {narrative.get('sentiment',0):+.2f}\n"
+        f"Euphoria: {euphoria['euphoria_score']:.0f}/100\n\n"
+        f"Red Flags:\n{flag_text}\n\n"
+        f"DEXScreener: {dex_url}"
     )
     send_telegram(msg)
     log_alert(snap, conviction)
@@ -756,14 +755,36 @@ def cache_cleanup_loop():
             log.info(f"Cache {name}: cleared {n} expired")
 
 # ================================================================
-# BAGIAN 17: FLASK
+# BAGIAN 17: FLASK — dengan route "/"
 # ================================================================
 app = Flask(__name__)
 
+@app.errorhandler(404)
+def handle_404(e):
+    return jsonify({
+        "status": "not_found",
+        "hint": "Gunakan /health atau /test-alert",
+    }), 404
+
 @app.errorhandler(Exception)
 def handle_exception(e):
-    log.error(f"[FLASK ERROR] {e}\n{traceback.format_exc()}")
+    log.error(f"[FLASK ERROR] {e}")
     return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route("/")
+def root():
+    with tracked_lock:
+        n = len(tracked)
+    return jsonify({
+        "name": "Conviction Scanner v7",
+        "status": "ONLINE",
+        "tg_configured": bool(TG_BOT_TOKEN and TG_CHAT_ID),
+        "tracked_tokens": n,
+        "endpoints": {
+            "health": "/health",
+            "test_alert": "/test-alert",
+        },
+    }), 200
 
 @app.route("/health")
 def health():
@@ -778,7 +799,7 @@ def health():
 
 @app.route("/test-alert")
 def test_alert():
-    send_telegram("🧪 *TEST ALERT*\n\nBot Telegram sudah terhubung!")
+    send_telegram("TEST ALERT - Bot Telegram sudah terhubung!")
     return jsonify({"status": "sent"}), 200
 
 # ================================================================
@@ -788,7 +809,7 @@ def main():
     init_db()
     init_limiters(LIMITER_CONFIG)
     init_caches(CACHE_CONFIG)
-    log.info("🚀 Conviction Scanner v7 starting...")
+    log.info("Conviction Scanner v7 starting...")
 
     register_watch("discovery", discovery_loop)
     register_watch("monitoring", monitoring_loop)
