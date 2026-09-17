@@ -797,11 +797,6 @@ def health():
         "tracked_tokens": n,
     }), 200
 
-@app.route("/test-alert")
-def test_alert():
-    send_telegram("TEST ALERT - Bot Telegram sudah terhubung!")
-    return jsonify({"status": "sent"}), 200
-
 # ================================================================
 # BAGIAN 18: MAIN
 # ================================================================
