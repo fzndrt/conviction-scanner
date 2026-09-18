@@ -256,17 +256,42 @@ def send_telegram(msg):
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         log.info(f"[TG DISABLED] {msg[:80]}")
         return
+
+    url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+
+    # Percobaan 1: Markdown
     try:
         r = requests.post(
-            f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
+            url,
             json={"chat_id": TG_CHAT_ID, "text": msg, "parse_mode": "Markdown",
                   "disable_web_page_preview": True},
             timeout=10,
         )
-        if r.status_code != 200:
+        if r.status_code == 200:
+            return
+        # Kalau 400 (Bad Request — biasanya Markdown error), fallback ke plain text
+        if r.status_code == 400:
+            log.warning(f"[TG] Markdown failed, retry as plain text")
+        else:
             log.warning(f"[TG] HTTP {r.status_code}: {r.text[:200]}")
+            return
     except Exception as e:
         log.warning(f"[TG] {e}")
+
+    # Percobaan 2: Plain text (tanpa Markdown)
+    try:
+        r = requests.post(
+            url,
+            json={"chat_id": TG_CHAT_ID, "text": msg,
+                  "disable_web_page_preview": True},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            log.info("[TG] Sent as plain text")
+        else:
+            log.warning(f"[TG] Plain text also failed: {r.status_code}")
+    except Exception as e:
+        log.warning(f"[TG] Fallback error: {e}")
 
 # ================================================================
 # BAGIAN 8: SNIFFER
@@ -724,47 +749,135 @@ def process_token(snap):
     narrative = fetch_narrative(snap.token, snap.symbol)
     if budget.check("narrative"): return
     euphoria = detect_euphoria(snap)
-    conviction = calculate_conviction(snap, insider, whale, narrative, euphoria)
+
+    # PENTING: unpack tuple (conviction, breakdown)
+    conviction, breakdown = calculate_conviction(snap, insider, whale, narrative, euphoria)
     upsert_token(snap, conviction)
+    log.info(f"[SCORE] {snap.name}: {conviction}/100")
+
     row = get_token_row(snap.token)
     if row and row["alert_sent"] == 0 and conviction >= MIN_CONVICTION_ALERT:
-        send_alert(snap, conviction, insider, whale, narrative, euphoria)
+        send_alert(snap, conviction, breakdown, insider, whale, narrative, euphoria)
         with db_lock:
             conn = sqlite3.connect(DB_FILE, check_same_thread=False)
             conn.execute("UPDATE tokens SET alert_sent=1 WHERE token=?", (snap.token,))
             conn.commit()
             conn.close()
 
-def send_alert(snap, conviction, insider, whale, narrative, euphoria):
+def _progress_bar(score, max_score, width=10):
+    """Buat progress bar unicode."""
+    filled = int((score / max_score) * width) if max_score > 0 else 0
+    filled = max(0, min(width, filled))
+    return "█" * filled + "░" * (width - filled)
+
+
+def _fmt_layer(breakdown, key, label):
+    """Format satu layer breakdown."""
+    d = breakdown[key]
+    score = d["score"]
+    maxs = d["max"]
+    bar = _progress_bar(score, maxs)
+    reasons = "\n".join(f"    • {r}" for r in d["reasons"])
+    return f"  {label}: {score:.1f}/{maxs} {bar}\n{reasons}"
+
+
+def _escape_md(text):
+    """Escape karakter Markdown Telegram."""
+    for ch in ["_", "*", "[", "]", "(", ")", "~", "`", ">", "#", "+", "-", "=", "|", "{", "}", ".", "!"]:
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+
+def send_alert(snap, conviction, breakdown, insider, whale, narrative, euphoria):
     dex_url = f"https://dexscreener.com/solana/{snap.token}"
+
+    # --- Grade & Emoji ---
+    if conviction >= 80:
+        grade = "SANGAT KUAT"
+        emoji = "🔥🔥🔥"
+    elif conviction >= 70:
+        grade = "KUAT"
+        emoji = "🔥🔥"
+    elif conviction >= 60:
+        grade = "BAGUS"
+        emoji = "🔥"
+    else:
+        grade = "WASPADA"
+        emoji = "⚠️"
+
+    # --- Breakdown per layer ---
+    breakdown_text = "\n".join([
+        _fmt_layer(breakdown, "security",    "🛡️ Security"),
+        _fmt_layer(breakdown, "insider",     "🕵️ Insider"),
+        _fmt_layer(breakdown, "whale",       "🐳 Whale"),
+        _fmt_layer(breakdown, "narrative",   "📰 Narrative"),
+        _fmt_layer(breakdown, "smart_money", "🧠 SmartMoney"),
+        _fmt_layer(breakdown, "momentum",    "📈 Momentum"),
+        _fmt_layer(breakdown, "euphoria",    "🌡️ Euphoria"),
+    ])
+
+    # --- Red flags ---
     flags = []
     if snap.mint_authority: flags.append("Mint authority aktif")
     if snap.freeze_authority: flags.append("Freeze authority aktif")
     if not snap.lp_burned: flags.append("LP belum burn")
     if snap.insider_clusters > 3: flags.append(f"{snap.insider_clusters} insider clusters")
-    if snap.same_first_funder: flags.append("Same first funder")
+    if snap.same_first_funder: flags.append("Same first funder (sniper)")
     if whale.get("bundle_detected"): flags.append("Bundle detected")
     if euphoria["euphoria_score"] > 50:
-        flags.append(f"Euphoria {euphoria['euphoria_score']:.0f}/100")
-    flag_text = "\n".join(flags) if flags else "Tidak ada red flag utama"
+        flags.append(f"Euphoria tinggi {euphoria['euphoria_score']:.0f}/100")
+    if flags:
+        flag_text = "\n".join(f"  ⚠️ {f}" for f in flags)
+    else:
+        flag_text = "  ✅ Tidak ada red flag utama"
+
+    # --- Penjelasan naratif ---
+    narrative_explain = f"Skor *{conviction:.1f}/100* masuk kategori *{grade}*. "
+
+    if conviction >= 70:
+        narrative_explain += "Token ini punya kombinasi keamanan, akumulasi whale, dan sentimen yang kuat. "
+    elif conviction >= 60:
+        narrative_explain += "Token ini punya fondasi bagus tapi belum semua layer konfirmasi. "
+    else:
+        narrative_explain += "Token ini masih early — banyak data belum tersedia. Wajib DYOR lebih dalam. "
+
+    # Tambahkan insight per layer
+    if breakdown["whale"]["score"] >= 8:
+        narrative_explain += "🐳 Whale terdeteksi akumulasi. "
+    if breakdown["narrative"]["score"] >= 10:
+        narrative_explain += "📰 Narasi sosial mulai bergerak. "
+    if breakdown["security"]["score"] >= 25:
+        narrative_explain += "🛡️ Keamanan on-chain bersih. "
+    if breakdown["smart_money"]["score"] >= 8:
+        narrative_explain += "🧠 Smart money aktif. "
+    if breakdown["euphoria"]["score"] >= 4:
+        narrative_explain += "🌡️ Belum FOMO — masih early. "
+
+    # --- Susun pesan ---
     msg = (
-        f"CONVICTION ALERT v7 - Skor {conviction}/100\n"
-        f"=====================================\n"
-        f"Nama: {snap.name} ({snap.symbol})\n"
-        f"Token: {snap.token}\n\n"
-        f"Harga: ${snap.price:.8f}\n"
-        f"Likuiditas: ${snap.liquidity:,.0f}\n"
-        f"Volume 1H: ${snap.volume_1h:,.0f}\n"
-        f"Perubahan 1H: {snap.price_change_1h:+.1f}%\n"
-        f"Buyer/Seller: {snap.buyers_1h}/{snap.sellers_1h}\n\n"
-        f"Security - RugCheck: {snap.rugcheck_score}/100\n"
-        f"Whale: {whale['whale_count']} smart money | Top10: {whale['top10_pct']:.1f}%\n"
-        f"Narrative: {narrative.get('narrative_stage','unknown')} | "
-        f"Sent: {narrative.get('sentiment',0):+.2f}\n"
-        f"Euphoria: {euphoria['euphoria_score']:.0f}/100\n\n"
-        f"Red Flags:\n{flag_text}\n\n"
-        f"DEXScreener: {dex_url}"
+        f"{emoji} *CONVICTION ALERT* {emoji}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"*{snap.name}* (`{snap.symbol}`)\n"
+        f"`{snap.token}`\n\n"
+        f"🎯 *SKOR: {conviction:.1f}/100* — {grade}\n\n"
+        f"💰 Harga: `${snap.price:.8f}`\n"
+        f"💧 Likuiditas: `${snap.liquidity:,.0f}`\n"
+        f"📊 Volume 1H: `${snap.volume_1h:,.0f}`\n"
+        f"📈 Perubahan 1H: `{snap.price_change_1h:+.1f}%`\n"
+        f"👥 Buyer/Seller 1H: `{snap.buyers_1h}/{snap.sellers_1h}`\n\n"
+        f"━━━ 📊 *BREAKDOWN SKOR* ━━━\n"
+        f"{breakdown_text}\n\n"
+        f"━━━ ⚠️ *RED FLAGS* ━━━\n"
+        f"{flag_text}\n\n"
+        f"━━━ 💡 *PENJELASAN* ━━━\n"
+        f"{narrative_explain}\n\n"
+        f"🔎 [DEXScreener]({dex_url})"
     )
+
+    # --- Telegram limit: 4096 chars. Potong kalau perlu. ---
+    if len(msg) > 4000:
+        msg = msg[:3950] + "...\n\n(terpotong karena limit Telegram)"
+
     send_telegram(msg)
     log_alert(snap, conviction)
 
