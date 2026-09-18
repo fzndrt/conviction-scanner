@@ -28,7 +28,7 @@ MIN_LIQ_DISCOVERY = float(os.environ.get("MIN_LIQ_DISCOVERY", "8000"))
 MIN_LIQ_VALIDATION = float(os.environ.get("MIN_LIQ_VALIDATION", "25000"))
 MIN_VOL_1H = float(os.environ.get("MIN_VOL_1H", "15000"))
 MAX_VOL_LIQ_RATIO = float(os.environ.get("MAX_VOL_LIQ_RATIO", "6.0"))
-MIN_CONVICTION_ALERT = float(os.environ.get("MIN_CONVICTION_ALERT", "75"))
+MIN_CONVICTION_ALERT = float(os.environ.get("MIN_CONVICTION_ALERT", "50"))
 
 SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "30"))
 DISCOVERY_INTERVAL = int(os.environ.get("DISCOVERY_INTERVAL", "120"))
