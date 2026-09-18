@@ -33,7 +33,7 @@ MIN_CONVICTION_ALERT = float(os.environ.get("MIN_CONVICTION_ALERT", "50"))
 SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "30"))
 DISCOVERY_INTERVAL = int(os.environ.get("DISCOVERY_INTERVAL", "120"))
 MAX_TRACKED = int(os.environ.get("MAX_TRACKED", "100"))
-TOKEN_TTL_HOURS = int(os.environ.get("TOKEN_TTL_HOURS", "24"))
+TOKEN_TTL_HOURS = int(os.environ.get("TOKEN_TTL_HOURS", "480"))
 
 DB_FILE = os.environ.get("DB_FILE", "/tmp/conviction_v7.db")
 
@@ -629,53 +629,108 @@ def calculate_conviction(snap, insider, whale, narrative, euphoria):
 # ================================================================
 def fetch_new_pools():
     """
-    Discovery via DexScreener: ambil token profiles terbaru,
-    filter Solana, lalu ambil pairs untuk masing-masing token.
+    Discovery dari 4 sumber:
+      1. Token profiles terbaru (baru < 24 jam)
+      2. Token boosted (trending via boost)
+      3. Token trending via search endpoint (bisa berumur hari/minggu)
+      4. Top gainers 24h (bisa berumur berapa pun)
     """
-    # Step 1: ambil latest token profiles
+    all_pools = []
+    seen_pairs = set()
+
+    # ============================================
+    # SUMBER 1: Token profiles terbaru
+    # ============================================
     def _get_profiles():
         r = http_get(f"{DEXSCREENER_API}/token-profiles/latest/v1", timeout=10)
-        if r and r.status_code == 200:
-            return r.json()
-        return None
+        return r.json() if r and r.status_code == 200 else None
 
-    profiles = safe_call(_get_profiles, default=None, breaker_name="dexscreener_profiles",
-                         limiter_name="dexscreener", cache=CACHES["market"],
-                         cache_key="ds_profiles_latest", cache_ttl=60, retries=1)
+    profiles = safe_call(_get_profiles, default=None,
+                         breaker_name="ds_profiles", limiter_name="dexscreener",
+                         cache=CACHES["market"], cache_key="ds_profiles",
+                         cache_ttl=60, retries=1)
 
-    if not profiles:
-        log.info("[DEX] No profiles fetched")
-        return []
+    new_tokens = []
+    if profiles:
+        for p in profiles:
+            if p.get("chainId") == DEXSCREENER_CHAIN:
+                addr = p.get("tokenAddress")
+                if addr:
+                    new_tokens.append(addr)
+    log.info(f"[DISCOVERY-1] {len(new_tokens)} new profile tokens")
 
-    # Step 2: filter Solana, ambil token address
-    solana_tokens = []
-    for p in profiles:
-        if p.get("chainId") == DEXSCREENER_CHAIN:
-            addr = p.get("tokenAddress")
-            if addr:
-                solana_tokens.append(addr)
+    # ============================================
+    # SUMBER 2: Token boosted (trending)
+    # ============================================
+    def _get_boosts():
+        r = http_get(f"{DEXSCREENER_API}/token-boosts/top/v1", timeout=10)
+        return r.json() if r and r.status_code == 200 else None
 
-    log.info(f"[DEX] {len(solana_tokens)} Solana profiles fetched")
+    boosts = safe_call(_get_boosts, default=None,
+                       breaker_name="ds_boosts", limiter_name="dexscreener",
+                       cache=CACHES["market"], cache_key="ds_boosts",
+                       cache_ttl=120, retries=1)
 
-    # Step 3: untuk setiap token, ambil pairs (batasi 30 untuk hemat rate limit)
-    pools = []
-    for token_addr in solana_tokens[:30]:
+    boost_tokens = []
+    if boosts:
+        for b in boosts:
+            if b.get("chainId") == DEXSCREENER_CHAIN:
+                addr = b.get("tokenAddress")
+                if addr and addr not in new_tokens:
+                    boost_tokens.append(addr)
+    log.info(f"[DISCOVERY-2] {len(boost_tokens)} boosted tokens")
+
+    # ============================================
+    # SUMBER 3: Search trending pairs (volume tinggi)
+    # Sumber ini bisa mencakup token berumur hari/minggu
+    # ============================================
+    def _search_pairs():
+        r = http_get(f"{DEXSCREENER_API}/latest/dex/search",
+                     params={"q": "SOL"}, timeout=10)
+        return r.json() if r and r.status_code == 200 else None
+
+    search_data = safe_call(_search_pairs, default=None,
+                            breaker_name="ds_search", limiter_name="dexscreener",
+                            cache=CACHES["market"], cache_key="ds_search_sol",
+                            cache_ttl=180, retries=1)
+
+    if search_data:
+        for pair in search_data.get("pairs", []) or []:
+            if pair.get("chainId") != DEXSCREENER_CHAIN:
+                continue
+            liq = float(pair.get("liquidity", {}).get("usd", 0) or 0)
+            if liq >= MIN_LIQ_DISCOVERY:
+                pair_addr = pair.get("pairAddress")
+                if pair_addr and pair_addr not in seen_pairs:
+                    all_pools.append(pair)
+                    seen_pairs.add(pair_addr)
+    log.info(f"[DISCOVERY-3] {len(all_pools)} pairs from search")
+
+    # ============================================
+    # SUMBER 4: Ambil pairs untuk setiap token (new + boost)
+    # ============================================
+    all_token_addrs = new_tokens[:30] + boost_tokens[:20]  # total max 50
+
+    for token_addr in all_token_addrs:
         def _get_pairs(addr=token_addr):
             r = http_get(f"{DEXSCREENER_API}/token-pairs/v1/{DEXSCREENER_CHAIN}/{addr}",
                          timeout=8)
-            if r and r.status_code == 200:
-                return r.json()
-            return None
+            return r.json() if r and r.status_code == 200 else None
 
-        data = safe_call(_get_pairs, default=None, breaker_name="dexscreener_pairs",
-                         limiter_name="dexscreener", cache=CACHES["market"],
-                         cache_key=f"ds_pairs:{token_addr}", cache_ttl=30, retries=1)
+        data = safe_call(_get_pairs, default=None,
+                         breaker_name="ds_pairs", limiter_name="dexscreener",
+                         cache=CACHES["market"], cache_key=f"ds_pairs:{token_addr}",
+                         cache_ttl=30, retries=1)
 
         if data and isinstance(data, list):
-            pools.extend(data)
+            for pair in data:
+                pair_addr = pair.get("pairAddress")
+                if pair_addr and pair_addr not in seen_pairs:
+                    all_pools.append(pair)
+                    seen_pairs.add(pair_addr)
 
-    log.info(f"[DEX] {len(pools)} pairs collected")
-    return pools
+    log.info(f"[DISCOVERY] Total {len(all_pools)} unique pairs dari 4 sumber")
+    return all_pools
 
 def fetch_pool_live(pair_address):
     """Live pair data via DexScreener. Return single pair dict."""
@@ -885,38 +940,128 @@ def send_alert(snap, conviction, breakdown, insider, whale, narrative, euphoria)
 # BAGIAN 16: WORKERS
 # ================================================================
 @resilient_loop("discovery", DISCOVERY_INTERVAL)
-def discovery_loop():
-    pools = fetch_new_pools()
-    count = 0
-    for pool in pools:
-        snap = parse_pool(pool)
-        if not snap or not snap.token: continue
-        if snap.liquidity < MIN_LIQ_DISCOVERY: continue
-        with tracked_lock:
-            if len(tracked) >= MAX_TRACKED: break
-            if snap.token not in tracked:
-                tracked[snap.token] = {"pool_id": snap.pool_id, "first_seen": int(time.time())}
-                count += 1
-    log.info(f"[DISCOVERY] +{count} new | total: {len(tracked)}")
+def check_resurrect():
+    """
+    Cek token yang sudah lewat TTL, tapi volume 24h tinggi.
+    Kalau ada, tambahkan kembali ke tracked.
+    """
+    def _search():
+        # Search pair dengan volume tinggi
+        r = http_get(f"{DEXSCREENER_API}/latest/dex/search",
+                     params={"q": "SOL"}, timeout=10)
+        return r.json() if r and r.status_code == 200 else None
 
+    data = safe_call(_search, default=None,
+                     breaker_name="ds_search", limiter_name="dexscreener",
+                     cache=CACHES["market"], cache_key="ds_resurrect",
+                     cache_ttl=600, retries=1)
+
+    if not data:
+        return 0
+
+    resurrected = 0
+    for pair in data.get("pairs", []) or []:
+        if pair.get("chainId") != DEXSCREENER_CHAIN:
+            continue
+
+        token_addr = pair.get("baseToken", {}).get("address")
+        pair_addr = pair.get("pairAddress")
+        if not token_addr or not pair_addr:
+            continue
+
+        # Cek apakah token sudah di tracked
+        with tracked_lock:
+            if token_addr in tracked:
+                continue
+
+        # Filter: likuiditas & volume tinggi
+        liq = float(pair.get("liquidity", {}).get("usd", 0) or 0)
+        vol_24h = float(pair.get("volume", {}).get("h24", 0) or 0)
+        price_change_24h = float(pair.get("priceChange", {}).get("h24", 0) or 0)
+
+        # Syarat resurrect:
+        # - Likuiditas > MIN_LIQ_VALIDATION (minimal $25k)
+        # - Volume 24h > 3× likuiditas (ada aktivitas signifikan)
+        # - Harga naik > 20% dalam 24h (momentum baru)
+        if (liq >= MIN_LIQ_VALIDATION and
+            vol_24h > liq * 3 and
+            price_change_24h > 20):
+
+            with tracked_lock:
+                if len(tracked) < MAX_TRACKED:
+                    tracked[token_addr] = {
+                        "pool_id": pair_addr,
+                        "first_seen": int(time.time()),
+                        "resurrected": True,
+                    }
+                    resurrected += 1
+                    log.info(f"[RESURRECT] {pair.get('baseToken', {}).get('symbol', '?')} "
+                             f"(liq ${liq:,.0f}, vol24h ${vol_24h:,.0f}, "
+                             f"+{price_change_24h:.1f}%)")
+
+    return resurrected
+    # TAMBAHAN: cek token yang bangkit kembali
+    resurrected = check_resurrect()
+    if resurrected > 0:
+        log.info(f"[DISCOVERY] {resurrected} tokens resurrected")
+        
 @resilient_loop("monitoring", SCAN_INTERVAL)
 def monitoring_loop():
     with tracked_lock:
         items = list(tracked.items())
+
     now = int(time.time())
+    now_minute = int(now / 60)
+
+    # Cleanup: hapus token yang umurnya > TTL
     expired = [t for t, v in items if now - v["first_seen"] > TOKEN_TTL_HOURS * 3600]
     for t in expired:
         with tracked_lock:
             tracked.pop(t, None)
+    if expired:
+        log.info(f"[CLEANUP] Removed {len(expired)} expired tokens")
+
+    scanned_count = 0
     for token, meta in items:
+        # Ambil info umur pool
+        age_hours = (now - meta["first_seen"]) / 3600
+
+        # === SCAN ADAPTIF ===
+        # - Token < 6 jam: scan setiap cycle (30s)
+        # - Token 6-24 jam: scan setiap 2 cycle (60s)
+        # - Token 24-72 jam: scan setiap 4 cycle (120s)
+        # - Token > 72 jam: scan setiap 10 cycle (5 menit)
+        if age_hours < 6:
+            skip_mod = 1
+        elif age_hours < 24:
+            skip_mod = 2
+        elif age_hours < 72:
+            skip_mod = 4
+        else:
+            skip_mod = 10
+
+        # Cek apakah token ini harus discan di cycle ini
+        token_index = hash(token) % skip_mod
+        if (now_minute % skip_mod) != token_index:
+            continue
+
         pool_data = fetch_pool_live(meta["pool_id"])
-        if not pool_data: continue
+        if not pool_data:
+            continue
         snap = parse_pool(pool_data)
-        if not snap: continue
-        if snap.liquidity < MIN_LIQ_DISCOVERY: continue
+        if not snap:
+            continue
+        if snap.liquidity < MIN_LIQ_DISCOVERY:
+            continue
+
         with tracked_lock:
-            if token in tracked: tracked[token]["last_updated"] = now
+            if token in tracked:
+                tracked[token]["last_updated"] = now
+
         process_token(snap)
+        scanned_count += 1
+
+    log.info(f"[MONITOR] Scanned {scanned_count}/{len(items)} tokens this cycle")
 
 @resilient_loop("memory_guard", 300)
 def memory_guard_loop():
