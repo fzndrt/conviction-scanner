@@ -589,40 +589,177 @@ def detect_euphoria(snap):
 # BAGIAN 13: CONVICTION
 # ================================================================
 def calculate_conviction(snap, insider, whale, narrative, euphoria):
-    score = 0.0
-    if snap.honeypot: return 0.0
-    if not snap.mint_authority and not snap.freeze_authority: score += 20
-    if snap.lp_burned: score += 5
-    ins = 0.0
-    if snap.insider_clusters == 0: ins += 10
-    if not snap.same_first_funder: ins += 5
-    if snap.sniper_share < 0.05: ins += 3
-    if insider.get("sniper_wallets", 0) == 0: ins += 2
-    score += min(20, ins)
-    wf = 0.0
-    if whale["whale_count"] >= 3: wf += 8
-    elif whale["whale_count"] >= 1: wf += 4
-    if not whale.get("bundle_detected"): wf += 3
-    if whale["top10_pct"] < 20: wf += 4
-    elif whale["top10_pct"] > 40: wf -= 6
-    score += max(0, min(15, wf))
+    """
+    Hitung conviction score dengan breakdown detail per layer.
+    Return: (total_score, breakdown_dict)
+    """
+    breakdown = {
+        "security":    {"score": 0.0, "max": 25, "reasons": []},
+        "insider":     {"score": 0.0, "max": 20, "reasons": []},
+        "whale":       {"score": 0.0, "max": 15, "reasons": []},
+        "narrative":   {"score": 0.0, "max": 20, "reasons": []},
+        "smart_money": {"score": 0.0, "max": 10, "reasons": []},
+        "momentum":    {"score": 0.0, "max": 5,  "reasons": []},
+        "euphoria":    {"score": 0.0, "max": 5,  "reasons": []},
+    }
+
+    # --- SECURITY (25) ---
+    if snap.honeypot:
+        breakdown["security"]["reasons"].append("HONEYPOT terdeteksi — auto-reject")
+        return 0.0, breakdown
+
+    if not snap.mint_authority and not snap.freeze_authority:
+        breakdown["security"]["score"] += 20
+        breakdown["security"]["reasons"].append("Mint & Freeze authority tidak aktif (+20)")
+    else:
+        if snap.mint_authority:
+            breakdown["security"]["reasons"].append("Mint authority aktif (0)")
+        if snap.freeze_authority:
+            breakdown["security"]["reasons"].append("Freeze authority aktif (0)")
+
+    if snap.lp_burned:
+        breakdown["security"]["score"] += 5
+        breakdown["security"]["reasons"].append("LP sudah burn (+5)")
+    else:
+        breakdown["security"]["reasons"].append("LP belum burn (0)")
+
+    # --- INSIDER (20) ---
+    ins = 0
+    if snap.insider_clusters == 0:
+        ins += 10
+        breakdown["insider"]["reasons"].append("Tidak ada insider cluster (+10)")
+    else:
+        breakdown["insider"]["reasons"].append(f"{snap.insider_clusters} insider cluster terdeteksi (0)")
+
+    if not snap.same_first_funder:
+        ins += 5
+        breakdown["insider"]["reasons"].append("Tidak ada same-first-funder (+5)")
+    else:
+        breakdown["insider"]["reasons"].append("Ada same-first-funder / sniper (0)")
+
+    if snap.sniper_share < 0.05:
+        ins += 3
+        breakdown["insider"]["reasons"].append(f"Sniper share rendah ({snap.sniper_share:.2%}) (+3)")
+    else:
+        breakdown["insider"]["reasons"].append(f"Sniper share tinggi ({snap.sniper_share:.2%}) (0)")
+
+    if insider.get("sniper_wallets", 0) == 0:
+        ins += 2
+        breakdown["insider"]["reasons"].append("Tidak ada sniper wallet (+2)")
+    else:
+        breakdown["insider"]["reasons"].append(f"{insider['sniper_wallets']} sniper wallet (0)")
+
+    breakdown["insider"]["score"] = min(20, ins)
+
+    # --- WHALE (15) ---
+    wf = 0
+    wc = whale.get("whale_count", 0)
+    if wc >= 3:
+        wf += 8
+        breakdown["whale"]["reasons"].append(f"{wc} smart money wallet (+8)")
+    elif wc >= 1:
+        wf += 4
+        breakdown["whale"]["reasons"].append(f"{wc} smart money wallet (+4)")
+    else:
+        breakdown["whale"]["reasons"].append("Tidak ada smart money wallet (0)")
+
+    if not whale.get("bundle_detected"):
+        wf += 3
+        breakdown["whale"]["reasons"].append("Tidak ada bundle terdeteksi (+3)")
+    else:
+        breakdown["whale"]["reasons"].append("Bundle terdeteksi (0)")
+
+    top10 = whale.get("top10_pct", 0)
+    if top10 < 20:
+        wf += 4
+        breakdown["whale"]["reasons"].append(f"Top10 holder {top10:.1f}% — tersebar (+4)")
+    elif top10 > 40:
+        wf -= 6
+        breakdown["whale"]["reasons"].append(f"Top10 holder {top10:.1f}% — terkonsentrasi (-6)")
+    else:
+        breakdown["whale"]["reasons"].append(f"Top10 holder {top10:.1f}% (0)")
+
+    breakdown["whale"]["score"] = max(0, min(15, wf))
+
+    # --- NARRATIVE (20) ---
     nar = narrative.get("narrative_score", 0)
     st = narrative.get("narrative_stage", "unknown")
-    if st == "emergence": nar = min(100, nar * 1.3)
-    elif st == "peak": nar *= 0.3
-    elif st == "declining": nar = 0
-    score += (nar / 100) * 20
-    sm = 0.0
-    if whale.get("whale_count", 0) >= 2: sm += 5
-    if whale.get("top10_pct", 100) < 25: sm += 5
-    score += min(10, sm)
-    mom = 0.0
-    if snap.liquidity >= MIN_LIQ_VALIDATION: mom += 2
-    if snap.volume_1h >= MIN_VOL_1H: mom += 2
-    if snap.buyers_1h >= 15: mom += 1
-    score += min(5, mom)
-    score += max(0, 5 * (1 - euphoria["euphoria_score"] / 100))
-    return round(min(100, max(0, score)), 1)
+    if st == "emergence":
+        nar = min(100, nar * 1.3)
+        breakdown["narrative"]["reasons"].append(f"Stage emergence — boost 1.3× ({nar:.0f}/100)")
+    elif st == "peak":
+        nar *= 0.3
+        breakdown["narrative"]["reasons"].append(f"Stage peak — potong 0.3× ({nar:.0f}/100)")
+    elif st == "declining":
+        nar = 0
+        breakdown["narrative"]["reasons"].append("Stage declining — 0")
+    elif st == "acceleration":
+        breakdown["narrative"]["reasons"].append(f"Stage acceleration ({nar:.0f}/100)")
+    elif st == "pre-narrative":
+        breakdown["narrative"]["reasons"].append(f"Stage pre-narrative ({nar:.0f}/100)")
+    else:
+        breakdown["narrative"]["reasons"].append(f"Stage unknown ({nar:.0f}/100)")
+
+    sent = narrative.get("sentiment", 0)
+    if sent > 0:
+        breakdown["narrative"]["reasons"].append(f"Sentiment +{sent:.2f}")
+    elif sent < 0:
+        breakdown["narrative"]["reasons"].append(f"Sentiment {sent:.2f}")
+
+    breakdown["narrative"]["score"] = (nar / 100) * 20
+
+    # --- SMART MONEY (10) ---
+    sm = 0
+    if wc >= 2:
+        sm += 5
+        breakdown["smart_money"]["reasons"].append(f"{wc} wallet smart money aktif (+5)")
+    else:
+        breakdown["smart_money"]["reasons"].append("Kurang dari 2 wallet smart money (0)")
+
+    if top10 < 25:
+        sm += 5
+        breakdown["smart_money"]["reasons"].append(f"Top10 {top10:.1f}% — distribusi sehat (+5)")
+    else:
+        breakdown["smart_money"]["reasons"].append(f"Top10 {top10:.1f}% (0)")
+
+    breakdown["smart_money"]["score"] = min(10, sm)
+
+    # --- MOMENTUM (5) ---
+    mom = 0
+    if snap.liquidity >= MIN_LIQ_VALIDATION:
+        mom += 2
+        breakdown["momentum"]["reasons"].append(f"Likuiditas ${snap.liquidity:,.0f} >= ${MIN_LIQ_VALIDATION:,.0f} (+2)")
+    else:
+        breakdown["momentum"]["reasons"].append(f"Likuiditas ${snap.liquidity:,.0f} < ${MIN_LIQ_VALIDATION:,.0f} (0)")
+
+    if snap.volume_1h >= MIN_VOL_1H:
+        mom += 2
+        breakdown["momentum"]["reasons"].append(f"Volume 1H ${snap.volume_1h:,.0f} >= ${MIN_VOL_1H:,.0f} (+2)")
+    else:
+        breakdown["momentum"]["reasons"].append(f"Volume 1H ${snap.volume_1h:,.0f} < ${MIN_VOL_1H:,.0f} (0)")
+
+    if snap.buyers_1h >= 15:
+        mom += 1
+        breakdown["momentum"]["reasons"].append(f"{snap.buyers_1h} buyer unik >= 15 (+1)")
+    else:
+        breakdown["momentum"]["reasons"].append(f"{snap.buyers_1h} buyer unik < 15 (0)")
+
+    breakdown["momentum"]["score"] = min(5, mom)
+
+    # --- EUPHORIA (5, inverse) ---
+    euph_score = euphoria.get("euphoria_score", 0)
+    euph_pts = max(0, 5 * (1 - euph_score / 100))
+    breakdown["euphoria"]["score"] = euph_pts
+    if euph_score < 30:
+        breakdown["euphoria"]["reasons"].append(f"Euphoria rendah ({euph_score:.0f}/100) — belum FOMO (+{euph_pts:.1f})")
+    elif euph_score < 60:
+        breakdown["euphoria"]["reasons"].append(f"Euphoria sedang ({euph_score:.0f}/100) (+{euph_pts:.1f})")
+    else:
+        breakdown["euphoria"]["reasons"].append(f"Euphoria tinggi ({euph_score:.0f}/100) — risiko FOMO (+{euph_pts:.1f})")
+
+    # --- TOTAL ---
+    total = sum(v["score"] for v in breakdown.values())
+    return round(min(100, max(0, total)), 1), breakdown
 
 # ================================================================
 # BAGIAN 14: GECKOTERMINAL
@@ -939,14 +1076,12 @@ def send_alert(snap, conviction, breakdown, insider, whale, narrative, euphoria)
 # ================================================================
 # BAGIAN 16: WORKERS
 # ================================================================
-@resilient_loop("discovery", DISCOVERY_INTERVAL)
 def check_resurrect():
     """
     Cek token yang sudah lewat TTL, tapi volume 24h tinggi.
     Kalau ada, tambahkan kembali ke tracked.
     """
     def _search():
-        # Search pair dengan volume tinggi
         r = http_get(f"{DEXSCREENER_API}/latest/dex/search",
                      params={"q": "SOL"}, timeout=10)
         return r.json() if r and r.status_code == 200 else None
@@ -969,20 +1104,14 @@ def check_resurrect():
         if not token_addr or not pair_addr:
             continue
 
-        # Cek apakah token sudah di tracked
         with tracked_lock:
             if token_addr in tracked:
                 continue
 
-        # Filter: likuiditas & volume tinggi
         liq = float(pair.get("liquidity", {}).get("usd", 0) or 0)
         vol_24h = float(pair.get("volume", {}).get("h24", 0) or 0)
         price_change_24h = float(pair.get("priceChange", {}).get("h24", 0) or 0)
 
-        # Syarat resurrect:
-        # - Likuiditas > MIN_LIQ_VALIDATION (minimal $25k)
-        # - Volume 24h > 3× likuiditas (ada aktivitas signifikan)
-        # - Harga naik > 20% dalam 24h (momentum baru)
         if (liq >= MIN_LIQ_VALIDATION and
             vol_24h > liq * 3 and
             price_change_24h > 20):
@@ -1000,86 +1129,126 @@ def check_resurrect():
                              f"+{price_change_24h:.1f}%)")
 
     return resurrected
-    # TAMBAHAN: cek token yang bangkit kembali
-    resurrected = check_resurrect()
-    if resurrected > 0:
-        log.info(f"[DISCOVERY] {resurrected} tokens resurrected")
-        
+
+
+@resilient_loop("discovery", DISCOVERY_INTERVAL)
+def discovery_loop():
+    """Discovery loop — cari token baru dari 4 sumber."""
+    try:
+        pools = fetch_new_pools()
+        count = 0
+        for pool in pools:
+            snap = parse_pool(pool)
+            if not snap or not snap.token:
+                continue
+            if snap.liquidity < MIN_LIQ_DISCOVERY:
+                continue
+            with tracked_lock:
+                if len(tracked) >= MAX_TRACKED:
+                    break
+                if snap.token not in tracked:
+                    tracked[snap.token] = {
+                        "pool_id": snap.pool_id,
+                        "first_seen": int(time.time()),
+                    }
+                    count += 1
+        log.info(f"[DISCOVERY] +{count} new | total: {len(tracked)}")
+
+        # Cek token yang bangkit kembali
+        try:
+            resurrected = check_resurrect()
+            if resurrected > 0:
+                log.info(f"[DISCOVERY] {resurrected} tokens resurrected")
+        except Exception as e:
+            log.warning(f"[RESURRECT] error: {e}")
+
+    except Exception as e:
+        log.error(f"[DISCOVERY] error: {e}")
+
+
 @resilient_loop("monitoring", SCAN_INTERVAL)
 def monitoring_loop():
-    with tracked_lock:
-        items = list(tracked.items())
-
-    now = int(time.time())
-    now_minute = int(now / 60)
-
-    # Cleanup: hapus token yang umurnya > TTL
-    expired = [t for t, v in items if now - v["first_seen"] > TOKEN_TTL_HOURS * 3600]
-    for t in expired:
+    """Monitoring loop — scan token dengan interval adaptif per umur."""
+    try:
         with tracked_lock:
-            tracked.pop(t, None)
-    if expired:
-        log.info(f"[CLEANUP] Removed {len(expired)} expired tokens")
+            items = list(tracked.items())
 
-    scanned_count = 0
-    for token, meta in items:
-        # Ambil info umur pool
-        age_hours = (now - meta["first_seen"]) / 3600
+        now = int(time.time())
+        now_minute = int(now / 60)
 
-        # === SCAN ADAPTIF ===
-        # - Token < 6 jam: scan setiap cycle (30s)
-        # - Token 6-24 jam: scan setiap 2 cycle (60s)
-        # - Token 24-72 jam: scan setiap 4 cycle (120s)
-        # - Token > 72 jam: scan setiap 10 cycle (5 menit)
-        if age_hours < 6:
-            skip_mod = 1
-        elif age_hours < 24:
-            skip_mod = 2
-        elif age_hours < 72:
-            skip_mod = 4
-        else:
-            skip_mod = 10
+        # Cleanup token kadaluarsa
+        expired = [t for t, v in items if now - v["first_seen"] > TOKEN_TTL_HOURS * 3600]
+        for t in expired:
+            with tracked_lock:
+                tracked.pop(t, None)
+        if expired:
+            log.info(f"[CLEANUP] Removed {len(expired)} expired tokens")
 
-        # Cek apakah token ini harus discan di cycle ini
-        token_index = hash(token) % skip_mod
-        if (now_minute % skip_mod) != token_index:
-            continue
+        scanned_count = 0
+        for token, meta in items:
+            age_hours = (now - meta["first_seen"]) / 3600
 
-        pool_data = fetch_pool_live(meta["pool_id"])
-        if not pool_data:
-            continue
-        snap = parse_pool(pool_data)
-        if not snap:
-            continue
-        if snap.liquidity < MIN_LIQ_DISCOVERY:
-            continue
+            # Scan adaptif berdasarkan umur
+            if age_hours < 6:
+                skip_mod = 1
+            elif age_hours < 24:
+                skip_mod = 2
+            elif age_hours < 72:
+                skip_mod = 4
+            else:
+                skip_mod = 10
 
-        with tracked_lock:
-            if token in tracked:
-                tracked[token]["last_updated"] = now
+            token_index = hash(token) % skip_mod
+            if (now_minute % skip_mod) != token_index:
+                continue
 
-        process_token(snap)
-        scanned_count += 1
+            pool_data = fetch_pool_live(meta["pool_id"])
+            if not pool_data:
+                continue
+            snap = parse_pool(pool_data)
+            if not snap:
+                continue
+            if snap.liquidity < MIN_LIQ_DISCOVERY:
+                continue
 
-    log.info(f"[MONITOR] Scanned {scanned_count}/{len(items)} tokens this cycle")
+            with tracked_lock:
+                if token in tracked:
+                    tracked[token]["last_updated"] = now
+
+            process_token(snap)
+            scanned_count += 1
+
+        log.info(f"[MONITOR] Scanned {scanned_count}/{len(items)} tokens this cycle")
+
+    except Exception as e:
+        log.error(f"[MONITOR] error: {e}")
+
 
 @resilient_loop("memory_guard", 300)
 def memory_guard_loop():
-    with tracked_lock:
-        if len(tracked) > MAX_TRACKED:
-            sorted_items = sorted(tracked.items(), key=lambda x: x[1].get("first_seen", 0))
-            excess = len(tracked) - MAX_TRACKED
-            for token, _ in sorted_items[:excess]:
-                tracked.pop(token, None)
-            log.info(f"Memory guard: removed {excess} tokens")
+    """Bersihkan token lama kalau tracked > MAX_TRACKED."""
+    try:
+        with tracked_lock:
+            if len(tracked) > MAX_TRACKED:
+                sorted_items = sorted(tracked.items(), key=lambda x: x[1].get("first_seen", 0))
+                excess = len(tracked) - MAX_TRACKED
+                for token, _ in sorted_items[:excess]:
+                    tracked.pop(token, None)
+                log.info(f"Memory guard: removed {excess} tokens")
+    except Exception as e:
+        log.error(f"[MEMORY_GUARD] error: {e}")
+
 
 @resilient_loop("cache_cleanup", 600)
 def cache_cleanup_loop():
-    for name, cache in CACHES.items():
-        n = cache.clear_expired()
-        if n:
-            log.info(f"Cache {name}: cleared {n} expired")
-
+    """Bersihkan cache expired."""
+    try:
+        for name, cache in CACHES.items():
+            n = cache.clear_expired()
+            if n:
+                log.info(f"Cache {name}: cleared {n} expired")
+    except Exception as e:
+        log.error(f"[CACHE_CLEANUP] error: {e}")
 # ================================================================
 # BAGIAN 17: FLASK — dengan route "/"
 # ================================================================
