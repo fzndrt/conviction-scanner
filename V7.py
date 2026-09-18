@@ -853,7 +853,35 @@ def root():
             "test_alert": "/test-alert",
         },
     }), 200
+@app.route("/debug/tokens")
+def debug_tokens():
+    """Lihat semua tracked token dan conviction score-nya."""
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("SELECT token, name, conviction, alert_sent FROM tokens ORDER BY conviction DESC LIMIT 50")
+        rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+    with tracked_lock:
+        tracked_count = len(tracked)
+    return jsonify({
+        "tracked_count": tracked_count,
+        "threshold": MIN_CONVICTION_ALERT,
+        "tokens": rows,
+    }), 200
 
+
+@app.route("/debug/force-alert")
+def force_alert():
+    """Force kirim alert untuk test — abaikan threshold."""
+    send_telegram(
+        "FORCE ALERT TEST\n\n"
+        "Kalau kamu lihat pesan ini, Telegram API bekerja.\n"
+        f"Threshold saat ini: {MIN_CONVICTION_ALERT}/100\n"
+        f"Tracked tokens: {len(tracked)}"
+    )
+    return jsonify({"status": "sent", "threshold": MIN_CONVICTION_ALERT}), 200
 @app.route("/health")
 def health():
     with tracked_lock:
