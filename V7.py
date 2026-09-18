@@ -90,7 +90,9 @@ if not TG_BOT_TOKEN or not TG_CHAT_ID:
 # ================================================================
 # BAGIAN 4: ENDPOINT
 # ================================================================
-GECKO_PUBLIC = "https://api.geckoterminal.com/api/v2"
+GECKO_PUBLIC = "https://api.geckoterminal.com/api/v2"  # fallback (tidak dipakai)
+DEXSCREENER_API = "https://api.dexscreener.com"
+DEXSCREENER_CHAIN = "solana"
 RUGCHECK_API = "https://api.rugcheck.xyz/v1"
 TNT_RISK_API = "https://www.tnt-audit.com/api/v1"
 MADEONSOL_API = "https://api.madeonsol.com/v1"
@@ -105,18 +107,21 @@ FREE_CRYPTO_NEWS = "https://fcn.dev/api"
 NETWORK = "solana"
 
 LIMITER_CONFIG = {
-    "gecko":      {"per_minute": 25, "per_hour": 1200},
-    "rugcheck":   {"per_minute": 8, "per_hour": 400},
-    "goplus":     {"per_minute": 20, "per_hour": 500},
-    "tnt":        {"per_minute": 1, "per_hour": 10},
-    "madeonsol":  {"per_minute": 8, "per_hour": 150},
-    "binance":    {"per_minute": 20, "per_hour": 500},
-    "cabalspy":   {"per_minute": 4, "per_hour": 200},
-    "vybe":       {"per_minute": 20, "per_hour": 500},
-    "mobula":     {"per_minute": 20, "per_hour": 500},
-    "adanos":     {"per_minute": 80, "per_hour": 500, "per_month": 230},
-    "santiment":  {"per_minute": 90, "per_hour": 450, "per_month": 900},
-    "fcn":        {"per_minute": 30, "per_hour": 500},
+    "dexscreener":           {"per_minute": 200, "per_hour": 5000},
+    "dexscreener_profiles":  {"per_minute": 50, "per_hour": 500},
+    "dexscreener_pairs":     {"per_minute": 150, "per_hour": 3000},
+    "gecko":                 {"per_minute": 8, "per_hour": 200},  # fallback saja
+    "rugcheck":              {"per_minute": 8, "per_hour": 400},
+    "goplus":                {"per_minute": 20, "per_hour": 500},
+    "tnt":                   {"per_minute": 1, "per_hour": 10},
+    "madeonsol":             {"per_minute": 8, "per_hour": 150},
+    "binance":               {"per_minute": 20, "per_hour": 500},
+    "cabalspy":              {"per_minute": 4, "per_hour": 200},
+    "vybe":                  {"per_minute": 20, "per_hour": 500},
+    "mobula":                {"per_minute": 20, "per_hour": 500},
+    "adanos":                {"per_minute": 80, "per_hour": 500, "per_month": 230},
+    "santiment":             {"per_minute": 90, "per_hour": 450, "per_month": 900},
+    "fcn":                   {"per_minute": 30, "per_hour": 500},
 }
 
 CACHE_CONFIG = {
@@ -231,8 +236,10 @@ def get_token_row(token):
 # BAGIAN 7: HTTP HELPER
 # ================================================================
 session = requests.Session()
-session.headers.update({"User-Agent": "ConvictionScanner/7.0"})
-
+session.headers.update({
+    "User-Agent": "Mozilla/5.0 (compatible; ConvictionScanner/7.0)",
+    "Accept": "application/json",
+})
 def http_get(url, params=None, headers=None, timeout=10):
     try:
         return session.get(url, params=params, headers=headers, timeout=timeout)
@@ -596,44 +603,105 @@ def calculate_conviction(snap, insider, whale, narrative, euphoria):
 # BAGIAN 14: GECKOTERMINAL
 # ================================================================
 def fetch_new_pools():
-    def _call():
-        r = http_get(f"{GECKO_PUBLIC}/networks/{NETWORK}/new_pools", timeout=10)
-        if r and r.status_code == 200: return r.json().get("data", [])
+    """
+    Discovery via DexScreener: ambil token profiles terbaru,
+    filter Solana, lalu ambil pairs untuk masing-masing token.
+    """
+    # Step 1: ambil latest token profiles
+    def _get_profiles():
+        r = http_get(f"{DEXSCREENER_API}/token-profiles/latest/v1", timeout=10)
+        if r and r.status_code == 200:
+            return r.json()
         return None
-    return safe_call(_call, default=[], breaker_name="gecko", limiter_name="gecko", retries=2)
 
-def fetch_pool_live(pool_id):
+    profiles = safe_call(_get_profiles, default=None, breaker_name="dexscreener_profiles",
+                         limiter_name="dexscreener", cache=CACHES["market"],
+                         cache_key="ds_profiles_latest", cache_ttl=60, retries=1)
+
+    if not profiles:
+        log.info("[DEX] No profiles fetched")
+        return []
+
+    # Step 2: filter Solana, ambil token address
+    solana_tokens = []
+    for p in profiles:
+        if p.get("chainId") == DEXSCREENER_CHAIN:
+            addr = p.get("tokenAddress")
+            if addr:
+                solana_tokens.append(addr)
+
+    log.info(f"[DEX] {len(solana_tokens)} Solana profiles fetched")
+
+    # Step 3: untuk setiap token, ambil pairs (batasi 30 untuk hemat rate limit)
+    pools = []
+    for token_addr in solana_tokens[:30]:
+        def _get_pairs(addr=token_addr):
+            r = http_get(f"{DEXSCREENER_API}/token-pairs/v1/{DEXSCREENER_CHAIN}/{addr}",
+                         timeout=8)
+            if r and r.status_code == 200:
+                return r.json()
+            return None
+
+        data = safe_call(_get_pairs, default=None, breaker_name="dexscreener_pairs",
+                         limiter_name="dexscreener", cache=CACHES["market"],
+                         cache_key=f"ds_pairs:{token_addr}", cache_ttl=30, retries=1)
+
+        if data and isinstance(data, list):
+            pools.extend(data)
+
+    log.info(f"[DEX] {len(pools)} pairs collected")
+    return pools
+
+def fetch_pool_live(pair_address):
+    """Live pair data via DexScreener. Return single pair dict."""
     def _call():
-        r = http_get(f"{GECKO_PUBLIC}/networks/{NETWORK}/pools/{pool_id}", timeout=8)
-        if r and r.status_code == 200: return r.json().get("data")
+        r = http_get(f"{DEXSCREENER_API}/latest/dex/pairs/{DEXSCREENER_CHAIN}/{pair_address}",
+                     timeout=8)
+        if r and r.status_code == 200:
+            data = r.json()
+            pairs = data.get("pairs", [])
+            return pairs[0] if pairs else None
         return None
-    return safe_call(_call, default=None, breaker_name="gecko", limiter_name="gecko",
-                     cache=CACHES["market"], cache_key=f"pool:{pool_id}",
-                     cache_ttl=25, retries=1)
+    return safe_call(_call, default=None, breaker_name="dexscreener",
+                     limiter_name="dexscreener", cache=CACHES["market"],
+                     cache_key=f"ds_pair:{pair_address}", cache_ttl=25, retries=1)
 
 def parse_pool(pool):
+    """
+    Parse DexScreener pair response ke TokenSnapshot.
+    DexScreener response format berbeda dari GeckoTerminal.
+    """
     try:
-        attr = pool.get("attributes", {})
-        base = pool.get("relationships", {}).get("base_token", {}).get("data", {}).get("id", "")
-        token = base.replace("solana_", "", 1) if base.startswith("solana_") else base
-        txns = attr.get("transactions", {}).get("h1", {})
-        pc = attr.get("price_change_percentage", {})
+        # DexScreener: baseToken.address, pairAddress, liquidity.usd, volume.h1, dll
+        base_token = pool.get("baseToken", {})
+        token = base_token.get("address", "")
+        if not token:
+            return None
+
+        txns_h1 = pool.get("txns", {}).get("h1", {})
+        volume_h1 = float(pool.get("volume", {}).get("h1", 0) or 0)
+        price_change = pool.get("priceChange", {})
+        liquidity = float(pool.get("liquidity", {}).get("usd", 0) or 0)
+
         return TokenSnapshot(
-            token=token, name=attr.get("name", "Unknown"),
-            pool_id=pool.get("id", ""),
-            price=float(attr.get("base_token_price_usd") or 0),
-            liquidity=float(attr.get("reserve_in_usd") or 0),
-            volume_1h=float(attr.get("volume_usd", {}).get("h1") or 0),
-            buys_1h=int(txns.get("buys") or 0),
-            sells_1h=int(txns.get("sells") or 0),
-            buyers_1h=int(txns.get("buyers") or 0),
-            sellers_1h=int(txns.get("sellers") or 0),
-            price_change_1h=float(pc.get("h1") or 0),
-            price_change_5m=float(pc.get("m5") or 0),
-            txns_1h=int(txns.get("buys", 0)) + int(txns.get("sells", 0)),
+            token=token,
+            name=base_token.get("name", "Unknown"),
+            symbol=base_token.get("symbol", ""),
+            pool_id=pool.get("pairAddress", ""),
+            price=float(pool.get("priceUsd", 0) or 0),
+            liquidity=liquidity,
+            volume_1h=volume_h1,
+            buys_1h=int(txns_h1.get("buys", 0) or 0),
+            sells_1h=int(txns_h1.get("sells", 0) or 0),
+            buyers_1h=int(txns_h1.get("buys", 0) or 0),
+            sellers_1h=int(txns_h1.get("sells", 0) or 0),
+            price_change_1h=float(price_change.get("h1", 0) or 0),
+            price_change_5m=float(price_change.get("m5", 0) or 0),
+            txns_1h=int(txns_h1.get("buys", 0) or 0) + int(txns_h1.get("sells", 0) or 0),
             first_seen=int(time.time()),
         )
-    except Exception:
+    except Exception as e:
+        log.warning(f"[PARSE] error: {e}")
         return None
 
 # ================================================================
