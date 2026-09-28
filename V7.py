@@ -1,14 +1,14 @@
 """
 ================================================================
-REVERSAL SCANNER v3.4 (ANTI-DUMP & GREEN REVERSAL CONFIRMATION)
+REVERSAL SCANNER v3.5 (ULTRA-SHARP 1-HOUR REVERSAL RADAR)
 Repo: https://github.com/fzndrt/conviction-scanner
 All-In-One Script: Mandiri tanpa perlu file tambahan!
 
-Peningkatan v3.4:
-1. Anti-Dump Guard: Memblokir koin dengan Price Change negatif (Dump/Panic Sell).
-2. Green Momentum Filter: Wajib konfirmasi candle hijau (H1 >= +2% & M5 >= 0%).
-3. Minimal Umur Stabil: 2.5 Jam s/d Tanpa Batas (Bebas dari dump awal bonding curve).
-4. Threshold Alert Tinggi: Skor minimal 80 untuk mencegah sinyal palsu.
+Formasi Golden Ratio:
+1. Minimal Umur 1.0 Jam (Bisa menangkap koin umur 1 - 2 jam & sleeping giant).
+2. Rasio Pembeli Ketat: Buy Ratio >= 1.8x (Dominasi pembeli mutlak).
+3. Konfirmasi Breakout: Price Change H1 >= +8.0% & M5 Hijau Aktif.
+4. Komunitas Asli: Unique Buyers >= 25 Wallets (Anti-Bot Tuyul).
 ================================================================
 """
 
@@ -37,24 +37,22 @@ TG_CHAT_ID = os.getenv("TG_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID", "")
 bot = telebot.TeleBot(TG_BOT_TOKEN) if TG_BOT_TOKEN else None
 
 # ==========================================
-# 🚪 PARAMETER PINTU MASUK & ANTI-DUMP
+# 🚪 PARAMETER PINTU MASUK GOLDEN RATIO
 # ==========================================
-MIN_TOKEN_AGE_HOURS = float(os.getenv("REV_MIN_AGE_HOURS", "2.5"))      # Min 2.5 jam (melewati fase dump bayi)
-MAX_TOKEN_AGE_HOURS = float(os.getenv("REV_MAX_AGE_HOURS", "999999.0")) # Tanpa batas umur (> 90 hari, 1 tahun)
+MIN_TOKEN_AGE_HOURS = float(os.getenv("REV_MIN_AGE_HOURS", "1.0"))      # Umur mulai 1.0 jam
+MAX_TOKEN_AGE_HOURS = float(os.getenv("REV_MAX_AGE_HOURS", "999999.0")) # Tanpa batas atas (> 90 hari, 1 tahun)
 MIN_LIQUIDITY_USD = float(os.getenv("REV_MIN_LIQ_USD", "4000.0"))        # Keamanan: Min Likuiditas $4,000
 MIN_MARKET_CAP = float(os.getenv("REV_MIN_MC", "15000.0"))              # Min Market Cap $15k
 MAX_MARKET_CAP = float(os.getenv("REV_MAX_MC", "800000.0"))            # Max Market Cap $800k
-MIN_VOL_H1 = float(os.getenv("REV_MIN_VOL_H1", "3500.0"))               # Min volume 1 jam $3,500
+MIN_VOL_H1 = float(os.getenv("REV_MIN_VOL_H1", "4000.0"))               # Min volume 1 jam $4,000
 MIN_SPIKE_RATIO = float(os.getenv("REV_MIN_SPIKE_RATIO", "2.2"))        # Lonjakan volume min 2.2x
-MIN_BUY_SELL_RATIO = float(os.getenv("REV_MIN_BUY_RATIO", "1.3"))       # Rasio pembeli min 1.3x
 
-# Anti-Dump Parameters:
-MIN_PRICE_CHANGE_H1 = float(os.getenv("REV_MIN_PC_H1", "2.0"))          # Harga H1 wajib naik minimal +2%
-MIN_PRICE_CHANGE_M5 = float(os.getenv("REV_MIN_PC_M5", "0.0"))          # Harga M5 tidak boleh minus
-
-# Anti-Wash Trading (Unique Buyers):
-MIN_UNIQUE_BUYERS_H1 = int(os.getenv("REV_MIN_BUYERS_H1", "15"))        # Min 15 dompet unik
-MIN_BUYS_COUNT_H1 = int(os.getenv("REV_MIN_BUYS_H1", "20"))             # Min 20 transaksi beli
+# 🛡️ FORMULA KETAT PEMBELI & ANTI-DUMP:
+MIN_BUY_SELL_RATIO = float(os.getenv("REV_MIN_BUY_RATIO", "1.8"))       # Rasio Pembeli Minimal 1.8x!
+MIN_PRICE_CHANGE_H1 = float(os.getenv("REV_MIN_PC_H1", "8.0"))          # Breakout Hijau Minimal +8.0%
+MIN_PRICE_CHANGE_M5 = float(os.getenv("REV_MIN_PC_M5", "0.5"))          # Detik sekarang masih naik minimal +0.5%
+MIN_UNIQUE_BUYERS_H1 = int(os.getenv("REV_MIN_BUYERS_H1", "25"))        # Min 25 Dompet Pembeli Unik
+MIN_BUYS_COUNT_H1 = int(os.getenv("REV_MIN_BUYS_H1", "30"))             # Min 30 Transaksi Beli
 
 stats = {
     "scans_completed": 0,
@@ -119,7 +117,7 @@ def fetch_active_solana_candidates() -> List[str]:
         if b.get("chainId") == "solana" and b.get("tokenAddress"):
             candidates.add(b["tokenAddress"])
 
-    # 3. Trending Solana Pools
+    # 3. Trending Solana Pools (Raydium, PumpSwap, Meteora)
     for q in ["pump", "sol", "cto", "meme"]:
         search_res = get_json(f"https://api.dexscreener.com/latest/dex/search?q={q}") or {}
         for pair in search_res.get("pairs", [])[:20]:
@@ -138,20 +136,19 @@ def evaluate_reversal_pair(pair: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not mint or not created_at:
         return None
         
-    # --- TAHAP 1: PINTU MASUK (HARD FILTER & ANTI-DUMP) ---
+    # --- TAHAP 1: PINTU MASUK (GOLDEN FILTER) ---
     now_ms = time.time() * 1000
     age_hours = (now_ms - created_at) / 3600000.0
     
-    # 1. Pintu Umur (Minimal 2.5 Jam)
+    # 1. Pintu Umur (1.0 Jam s/d Tanpa Batas)
     if age_hours < MIN_TOKEN_AGE_HOURS or age_hours > MAX_TOKEN_AGE_HOURS:
         return None
         
-    # 2. 🛡️ PINTU ANTI-DUMP (Wajib Reversal Hijau!)
+    # 2. Pintu Konfirmasi Breakout Hijau (Wajib H1 >= +8% dan M5 >= +0.5%)
     price_change = pair.get("priceChange", {})
     pc_h1 = float(price_change.get("h1") or 0.0)
     pc_m5 = float(price_change.get("m5") or 0.0)
     
-    # Tolak koin yang harganya sedang dump atau minus!
     if pc_h1 < MIN_PRICE_CHANGE_H1 or pc_m5 < MIN_PRICE_CHANGE_M5:
         stats["dump_rejected"] += 1
         return None
@@ -161,7 +158,7 @@ def evaluate_reversal_pair(pair: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if liq_usd < MIN_LIQUIDITY_USD:
         return None
         
-    # 4. Pintu Market Cap
+    # 4. Pintu Market Cap ($15k - $800k)
     mc = float(pair.get("marketCap") or pair.get("fdv") or 0.0)
     if mc < MIN_MARKET_CAP or mc > MAX_MARKET_CAP:
         return None
@@ -172,22 +169,31 @@ def evaluate_reversal_pair(pair: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if vol_h1 < MIN_VOL_H1:
         return None
         
-    # 6. Pintu Lonjakan Volume (Volume Spike)
+    # 6. Pintu Lonjakan Volume (Volume Spike >= 2.2x)
     avg_prev_hourly = (vol_h24 - vol_h1) / 23.0 if vol_h24 > vol_h1 else (vol_h24 / 24.0)
     spike_ratio = vol_h1 / max(100.0, avg_prev_hourly)
     if spike_ratio < MIN_SPIKE_RATIO:
         return None
         
-    # 7. Pintu Tekanan Pembeli & Total Order
-    txns_h1 = pair.get("txns", {}).get("h1", {})
+    # 7. 🛡️ PINTU DOMINASI PEMBELI KETAT (Buy Ratio >= 1.8x)
+    txns = pair.get("txns", {})
+    txns_h1 = txns.get("h1", {})
     buys_h1 = int(txns_h1.get("buys", 0))
     sells_h1 = max(1, int(txns_h1.get("sells", 1)))
     buy_ratio = round(buys_h1 / sells_h1, 2)
     
+    # Syarat transaksi H1
     if buys_h1 < MIN_BUYS_COUNT_H1 or buy_ratio < MIN_BUY_SELL_RATIO:
         return None
+        
+    # Syarat M5: Pembeli di 5 menit terakhir juga harus memimpin
+    txns_m5 = txns.get("m5", {})
+    buys_m5 = int(txns_m5.get("buys", 0))
+    sells_m5 = int(txns_m5.get("sells", 0))
+    if buys_m5 <= sells_m5 and buys_m5 < 5:
+        return None
 
-    # 8. Pintu Anti-Wash Trading (Unique Buyers)
+    # 8. Pintu Anti-Wash Trading (Unique Buyers >= 25)
     makers_data = pair.get("makers", {})
     unique_makers_h1 = makers_data.get("h1") if isinstance(makers_data, dict) else None
     
@@ -206,7 +212,7 @@ def evaluate_reversal_pair(pair: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
 
     # --- TAHAP 2: PERHITUNGAN PRESTASI & SKOR (0 - 100) ---
-    score = 60  # Modal awal lolos pintu masuk
+    score = 60  # Modal awal kelulusan seluruh pintu masuk
     
     # Prestasi Lonjakan Volume
     if spike_ratio >= 6.0: 
@@ -216,24 +222,24 @@ def evaluate_reversal_pair(pair: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     elif spike_ratio >= 2.5: 
         score += 5
         
-    # Prestasi Momentum Hijau (Reversal Strength)
-    if pc_h1 >= 30.0:
+    # Prestasi Breakout Hijau
+    if pc_h1 >= 40.0:
         score += 15
-    elif pc_h1 >= 15.0:
+    elif pc_h1 >= 20.0:
         score += 10
-    elif pc_h1 >= 5.0:
+    elif pc_h1 >= 10.0:
         score += 5
         
-    # Prestasi Agresivitas Pembeli
-    if buy_ratio >= 2.5: 
+    # Prestasi Dominasi Pembeli
+    if buy_ratio >= 3.0: 
         score += 10
-    elif buy_ratio >= 1.8: 
+    elif buy_ratio >= 2.2: 
         score += 5
         
-    # Prestasi Komunitas Asli (Unique Buyers Banyak)
-    if unique_buyers_est >= 40:
+    # Prestasi Komunitas Asli
+    if unique_buyers_est >= 50:
         score += 10
-    elif unique_buyers_est >= 25:
+    elif unique_buyers_est >= 30:
         score += 5
 
     # Prestasi Sweet Spot MC
@@ -275,10 +281,12 @@ def format_telegram_alert(data: Dict[str, Any]) -> str:
         status_tag = "👑 <b>LEGENDARY SLEEPING GIANT (&gt;30 HARI BANGKIT)</b>"
     elif age_days >= 7.0:
         status_tag = "🔥 <b>WEEKLY CTO REVERSAL (1+ MINGGU BANGKIT)</b>"
+    elif data['age_hours'] <= 2.5:
+        status_tag = "⚡ <b>FAST BREAKOUT REVERSAL (1 - 2 JAM RELI)</b>"
     else:
         status_tag = "🔄 <b>FRESH REVERSAL / CTO AWAKENING</b>"
         
-    grade = "💎 GRADE S (ORGANIC WHALE ACCUMULATION)" if data['score'] >= 88 else "🚀 GRADE A (CONFIRMED REVERSAL)"
+    grade = "💎 GRADE S (ORGANIC WHALE BREAKOUT)" if data['score'] >= 88 else "🚀 GRADE A (HIGH CONVICTION REVERSAL)"
 
     msg = f"""
 {status_tag}
@@ -289,19 +297,20 @@ def format_telegram_alert(data: Dict[str, Any]) -> str:
 💧 <b>Likuiditas Pool:</b> <code>${data['liq_usd']:,.0f}</code>
 ⏳ <b>Umur Koin:</b> <code>{age_str} yang lalu</code>
 ━━━━━━━━━━━━━━━━━━━━
-📈 <b>Laporan Momentum & Lonjakan:</b>
-• <b>Perubahan Harga H1:</b> <code>+{data['pc_h1']:.1f}% (GREEN MOMENTUM)</code>
-• <b>Perubahan Harga M5:</b> <code>+{data['pc_m5']:.1f}%</code>
+📈 <b>Laporan Momentum & Breakout:</b>
+• <b>Perubahan Harga H1:</b> <code>+{data['pc_h1']:.1f}% (GREEN BREAKOUT)</code>
+• <b>Momentum M5 Saat Ini:</b> <code>+{data['pc_m5']:.1f}% (PEMBELI AKTIF)</code>
+• <b>Rasio Pembeli:</b> <code>{data['buy_ratio']}x Pembeli (Dominan)</code>
 • <b>Volume 1 Jam (H1):</b> <code>${data['vol_h1']:,.0f}</code>
 • <b>Lonjakan Volume (Spike):</b> <code>+{data['spike_ratio']:.2f}x Lipat!</code>
-• <b>Rasio Pembeli:</b> <code>{data['buy_ratio']}x Buyers</code>
-• <b>Transaksi:</b> <code>{data['buys']} Buys vs {data['sells']} Sells</code>
-• <b>Dompet Pembeli Unik:</b> <code>~{data['unique_buyers']} Wallets</code>
+• <b>Aktivitas Transaksi:</b> <code>{data['buys']} Buys vs {data['sells']} Sells</code>
+• <b>Dompet Pembeli Unik:</b> <code>~{data['unique_buyers']} Unique Wallets</code>
 • <b>Platform DEX:</b> <code>{data['dex']}</code>
 ━━━━━━━━━━━━━━━━━━━━
-🛡️ <b>Audit Keamanan & Pintu Masuk:</b>
-• Konfirmasi Anti-Dump: <code>LOLOS (Candle Hijau Aktif)</code>
-• Anti-Wash Trading: <code>LOLOS (Makers Asli)</code>
+🛡️ <b>Audit Keamanan Pintu Masuk:</b>
+• Dominasi Pembeli: <code>LOLOS (Buy Ratio &gt;= 1.8x)</code>
+• Konfirmasi Anti-Dump: <code>LOLOS (Candle Hijau Kuat)</code>
+• Anti-Wash Trading: <code>LOLOS (Makers Organik)</code>
 • Freeze & Mint Authority: <code>REVOKED (AMAN)</code>
 
 📋 <b>Mint Address:</b>
@@ -316,7 +325,7 @@ def format_telegram_alert(data: Dict[str, Any]) -> str:
     return msg.strip()
 
 def run_reversal_scanner_loop():
-    logger.info("Radar Reversal Scanner aktif memindai koin tidur Solana...")
+    logger.info("Radar Reversal Scanner v3.5 aktif memindai koin tidur Solana...")
     while True:
         try:
             candidates = fetch_active_solana_candidates()
@@ -340,10 +349,10 @@ def run_reversal_scanner_loop():
                             continue
                             
                         res_eval = evaluate_reversal_pair(pair)
-                        # Standar kelulusan dinaikkan menjadi >= 80 poin
-                        if res_eval and res_eval["score"] >= 80:
+                        # Threshold kelulusan skor tinggi
+                        if res_eval and res_eval["score"] >= 82:
                             stats["reversals_detected"] += 1
-                            logger.info(f"🚨 REVERSAL DITEMUKAN: {res_eval['name']} (${res_eval['symbol']}) | MC: ${res_eval['mc']:,.0f} | H1: +{res_eval['pc_h1']}%")
+                            logger.info(f"🚨 REVERSAL DITEMUKAN: {res_eval['name']} (${res_eval['symbol']}) | MC: ${res_eval['mc']:,.0f} | BuyRatio: {res_eval['buy_ratio']}x")
                             
                             if bot and TG_CHAT_ID:
                                 text = format_telegram_alert(res_eval)
@@ -363,7 +372,7 @@ def run_reversal_scanner_loop():
 def index():
     return jsonify({
         "service": "solana-reversal-scanner",
-        "version": "v3.4-anti-dump",
+        "version": "v3.5-golden-ratio",
         "status": "online",
         "stats": stats,
         "cached_tokens": len(alerted_cache)
@@ -373,17 +382,18 @@ if __name__ == "__main__":
     if TG_BOT_TOKEN and TG_CHAT_ID:
         try:
             startup_msg = """
-🤖 <b>REVERSAL SCANNER BOT v3.4 ONLINE!</b>
+🤖 <b>REVERSAL SCANNER BOT v3.5 ONLINE!</b>
 ━━━━━━━━━━━━━━━━━━━━
 ✅ <b>Status:</b> Terhubung Berhasil ke Server Render
-📡 <b>Radar:</b> Solana Sleeping Giants & CTO Awakening
-🛡️ <b>Protokol Keamanan & Anti-Dump:</b>
-• Konfirmasi Momentum Hijau (Wajib H1 >= +2%, M5 >= 0%)
-• Anti-Wash Trading (Unique Buyers)
-• Anti-Honeypot / Freeze & Mint Check
-• Ambang Batas Skor Kelulusan: <code>>= 80 Poin</code>
+📡 <b>Radar:</b> Solana Sleeping Giants & Fast 1-Hour Reversal
+🛡️ <b>Protokol Golden Ratio:</b>
+• Rentang Umur: <code>1.0 Jam s/d Tanpa Batas</code>
+• Rasio Pembeli Minimum: <code>1.8x Buyers</code>
+• Konfirmasi Breakout Hijau: <code>H1 >= +8%, M5 >= +0.5%</code>
+• Anti-Wash Trading: <code>>= 25 Unique Wallets</code>
+• Ambang Batas Kelulusan: <code>>= 82 Poin</code>
 ━━━━━━━━━━━━━━━━━━━━
-🎯 <i>Radar aktif memindai koin tidur berbalik arah terbang...</i>
+🎯 <i>Radar memindai akumulasi koin reversal berkualitas tinggi...</i>
 """
             bot.send_message(TG_CHAT_ID, startup_msg.strip(), parse_mode="HTML")
             logger.info("Notifikasi startup berhasil dikirim ke Telegram!")
