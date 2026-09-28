@@ -120,22 +120,31 @@ def check_solana_security_and_holders(mint: str) -> Dict[str, Any]:
 def fetch_active_solana_candidates() -> List[str]:
     candidates = set()
     
-    # 1. Token profiles
+    # 1. Token profiles terbaru
     profiles = get_json("https://api.dexscreener.com/token-profiles/latest/v1") or []
     for p in profiles:
         if p.get("chainId") == "solana" and p.get("tokenAddress"):
             candidates.add(p["tokenAddress"])
             
-    # 2. Token boost aktif di DexScreener
-    boosts = get_json("https://api.dexscreener.com/token-boosts/top/v1") or []
-    for b in boosts:
-        if b.get("chainId") == "solana" and b.get("tokenAddress"):
-            candidates.add(b["tokenAddress"])
+    # 2. Token boost aktif di DexScreener (Top & Latest)
+    for boost_url in [
+        "https://api.dexscreener.com/token-boosts/top/v1",
+        "https://api.dexscreener.com/token-boosts/latest/v1"
+    ]:
+        boosts = get_json(boost_url) or []
+        for b in boosts:
+            if b.get("chainId") == "solana" and b.get("tokenAddress"):
+                candidates.add(b["tokenAddress"])
 
-    # 3. Trending Solana Pools (Raydium, PumpSwap, Meteora)
-    for q in ["pump", "sol", "cto", "meme"]:
-        search_res = get_json(f"https://api.dexscreener.com/latest/dex/search?q={q}") or {}
-        for pair in search_res.get("pairs", [])[:20]:
+    # 3. 🌐 JARING LEBAR SOLANA MEME & SLEEPING GIANTS (25+ Seed Kunci)
+    wide_seeds = [
+        "sol", "pump", "ray", "meme", "cto", "moon", "pepe", "doge", "cat", "dog", 
+        "inu", "ai", "trump", "bonk", "wif", "bome", "popcat", "goat", "moodeng", 
+        "act", "pnut", "chill", "fart", "spx", "giga", "coin", "token"
+    ]
+    for s in wide_seeds:
+        search_res = get_json(f"https://api.dexscreener.com/latest/dex/search?q={s}") or {}
+        for pair in search_res.get("pairs", [])[:15]:
             if pair.get("chainId") == "solana":
                 addr = pair.get("baseToken", {}).get("address")
                 if addr:
