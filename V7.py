@@ -1,14 +1,15 @@
 """
 ================================================================
-REVERSAL SCANNER v3.7 (ULTRA-STRICT HYPE & ANTI-WHALE DUMP)
+REVERSAL SCANNER v3.8 (WIDE-NET RADAR + ULTRA-STRICT HYPE)
 Repo: https://github.com/fzndrt/conviction-scanner
 All-In-One Script: Mandiri tanpa perlu file tambahan!
 
-Fitur Keamanan Baru:
-1. Anti-Whale / Dev Concentration: Blokir koin jika top holder > 12%.
-2. Super Momentum M5: Wajib candle M5 >= +3.5% (Tolak koin fakeout).
-3. Dominasi Pembeli Real-Time: M5 Buys wajib >= 1.4x M5 Sells.
-4. Ambang Kelulusan Ketat: Skor Telegram minimal >= 85 (Hanya Super Hype).
+Pembaruan v3.8:
+1. Jaring Lebar (Wide Net): 25+ seed kata kunci untuk menangkap koin tidur (seperti Mamesuke).
+2. Anti-Whale / Dev Dump: Blokir koin jika top holder pribadi > 12%.
+3. Super Momentum M5: Wajib candle M5 >= +3.5% (Tolak koin fakeout / dump).
+4. Dominasi Pembeli Real-Time: M5 Buys wajib >= 1.35x M5 Sells.
+5. Ambang Kelulusan Ketat: Skor Telegram minimal >= 85 (Hanya Super Hype).
 ================================================================
 """
 
@@ -101,8 +102,7 @@ def check_solana_security_and_holders(mint: str) -> Dict[str, Any]:
     for h in top_holders:
         pct = float(h.get("pct") or 0.0)
         # Abaikan Raydium/Pump pool address yang biasanya pegang LP
-        addr = h.get("address", "")
-        if pct > max_holder_pct and pct < 90.0:  # < 90% untuk membedakan dari pool belum burn
+        if pct > max_holder_pct and pct < 90.0:
             max_holder_pct = pct
 
     whale_danger = max_holder_pct > MAX_TOP_HOLDER_PCT
@@ -118,6 +118,7 @@ def check_solana_security_and_holders(mint: str) -> Dict[str, Any]:
     }
 
 def fetch_active_solana_candidates() -> List[str]:
+    """Menjaring token Solana aktif dan koin tidur yang bangkit."""
     candidates = set()
     
     # 1. Token profiles terbaru
@@ -137,6 +138,7 @@ def fetch_active_solana_candidates() -> List[str]:
                 candidates.add(b["tokenAddress"])
 
     # 3. 🌐 JARING LEBAR SOLANA MEME & SLEEPING GIANTS (25+ Seed Kunci)
+    # Menangkap koin seperti Mamesuke, Inus, Cats, Dogs, CTOs yang bangkit dari tidur
     wide_seeds = [
         "sol", "pump", "ray", "meme", "cto", "moon", "pepe", "doge", "cat", "dog", 
         "inu", "ai", "trump", "bonk", "wif", "bome", "popcat", "goat", "moodeng", 
@@ -227,7 +229,7 @@ def evaluate_reversal_pair(pair: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     else:
         unique_buyers_est = max(int(buys_h1 * 0.65), MIN_UNIQUE_BUYERS_H1)
 
-    # 9. 🛡️ PINTU ANTI-WHALE & AUDIT KEAMANAN (Menolak koin seperti $o)
+    # 9. 🛡️ PINTU ANTI-WHALE & AUDIT KEAMANAN (Menolak koin dump)
     sec_audit = check_solana_security_and_holders(mint)
     if not sec_audit["safe"]:
         if sec_audit.get("whale_danger"):
@@ -357,7 +359,7 @@ def format_telegram_alert(data: Dict[str, Any]) -> str:
     return msg.strip()
 
 def run_reversal_scanner_loop():
-    logger.info("Radar Reversal Scanner v3.7 Ultra-Strict aktif...")
+    logger.info("Radar Reversal Scanner v3.8 Wide-Net aktif...")
     while True:
         try:
             candidates = fetch_active_solana_candidates()
@@ -404,7 +406,7 @@ def run_reversal_scanner_loop():
 def index():
     return jsonify({
         "service": "solana-reversal-scanner",
-        "version": "v3.7-ultra-strict-hype",
+        "version": "v3.8-wide-net-hype",
         "status": "online",
         "stats": stats,
         "cached_tokens": len(alerted_cache)
@@ -414,11 +416,11 @@ if __name__ == "__main__":
     if TG_BOT_TOKEN and TG_CHAT_ID:
         try:
             startup_msg = """
-🤖 <b>REVERSAL SCANNER BOT v3.7 ULTRA-STRICT ONLINE!</b>
+🤖 <b>REVERSAL SCANNER BOT v3.8 ONLINE!</b>
 ━━━━━━━━━━━━━━━━━━━━
 ✅ <b>Status:</b> Terhubung Berhasil ke Server Render
-📡 <b>Radar:</b> Solana Super Hype & Anti-Whale Dump
-🛡️ <b>Protokol Baru:</b>
+📡 <b>Radar:</b> Solana Wide-Net (25+ Meme Seeds & Sleeping Giants)
+🛡️ <b>Protokol Keamanan:</b>
 • Anti-Whale Concentration: <code>Max Holder &lt; 12.0%</code>
 • Super Momentum M5: <code>Wajib M5 &gt;= +3.5%</code>
 • Rasio Pembeli Real-Time: <code>M5 Buys &gt;= 1.35x Sells</code>
