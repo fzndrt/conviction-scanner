@@ -1,18 +1,17 @@
 """
 ================================================================
-REVERSAL SCANNER v3.2 (ULTIMATE SECURITY & CTO AWAKENING RADAR)
+REVERSAL SCANNER v3.3 (FULL RADAR & MULTI-SOURCE DISCOVERY)
 Repo: https://github.com/fzndrt/conviction-scanner
 All-In-One Script: Mandiri tanpa perlu file tambahan!
 
-Fitur Keamanan Terintegrasi:
-1. Startup Handshake Telegram: Mengirim pesan konfirmasi langsung saat deploy.
-2. Keamanan Tingkat Tinggi:
-   - RugCheck / Anti-Honeypot (No Freeze, No Mintable, No Tax).
-   - Minimal Likuiditas $4,000 (Anti-Rug).
-   - Anti-Wash Trading (Unique Buyers / Makers Verification).
-3. Pintu Masuk & Prestasi:
-   - Umur Koin > 2 Jam s/d Tanpa Batas (> 90 Hari, 180 Hari, 1 Tahun).
-   - Volume Spike > 2.2x Lipat & Rasio Pembeli Agresif.
+Peningkatan v3.3:
+1. Menghilangkan Zona Abu-abu: Umur koin dipantau mulai dari 1.0 Jam s/d Tanpa Batas (> 90 Hari).
+2. Multi-Source Discovery: Koin yang tidak bayar Dex Boost tetap tertangkap melalui Trending DEX & Raydium/PumpSwap.
+3. Keamanan Pintu Masuk Lengkap:
+   - Audit RugCheck (No Freeze, No Mint).
+   - Anti-Wash Trading (Unique Wallets Verification).
+   - Minimal Likuiditas $4,000.
+4. Startup Handshake ke Telegram saat deploy.
 ================================================================
 """
 
@@ -34,7 +33,7 @@ logger = logging.getLogger("reversal-scanner")
 
 app = Flask(__name__)
 
-# Konfigurasi Telegram (Mendukung TG_BOT_TOKEN atau TELEGRAM_BOT_TOKEN)
+# Konfigurasi Telegram
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID", "")
 
@@ -43,8 +42,9 @@ bot = telebot.TeleBot(TG_BOT_TOKEN) if TG_BOT_TOKEN else None
 # ==========================================
 # 🚪 PARAMETER PINTU MASUK & KEAMANAN
 # ==========================================
-MIN_TOKEN_AGE_HOURS = float(os.getenv("REV_MIN_AGE_HOURS", "2.0"))      # Minimal umur 2 jam
-MAX_TOKEN_AGE_HOURS = float(os.getenv("REV_MAX_AGE_HOURS", "999999.0")) # Tanpa batas atas (> 90 hari+)
+# Minimal umur diturunkan ke 1.0 jam agar koin 1-2 jam seperti $LEVERAGE langsung tertangkap!
+MIN_TOKEN_AGE_HOURS = float(os.getenv("REV_MIN_AGE_HOURS", "1.0"))      
+MAX_TOKEN_AGE_HOURS = float(os.getenv("REV_MAX_AGE_HOURS", "999999.0")) # Tanpa batas atas umur (bisa >90 hari, 1 tahun)
 MIN_LIQUIDITY_USD = float(os.getenv("REV_MIN_LIQ_USD", "4000.0"))        # Keamanan: Min Likuiditas $4,000
 MIN_MARKET_CAP = float(os.getenv("REV_MIN_MC", "15000.0"))              # Min Market Cap $15k
 MAX_MARKET_CAP = float(os.getenv("REV_MAX_MC", "800000.0"))            # Max Market Cap $800k
@@ -52,7 +52,7 @@ MIN_VOL_H1 = float(os.getenv("REV_MIN_VOL_H1", "3500.0"))               # Min vo
 MIN_SPIKE_RATIO = float(os.getenv("REV_MIN_SPIKE_RATIO", "2.2"))        # Lonjakan volume min 2.2x
 MIN_BUY_SELL_RATIO = float(os.getenv("REV_MIN_BUY_RATIO", "1.3"))       # Rasio pembeli min 1.3x
 
-# Anti-Wash Trading:
+# Anti-Wash Trading (Unique Buyers):
 MIN_UNIQUE_BUYERS_H1 = int(os.getenv("REV_MIN_BUYERS_H1", "15"))        # Min 15 dompet pembeli unik di H1
 MIN_BUYS_COUNT_H1 = int(os.getenv("REV_MIN_BUYS_H1", "20"))             # Min 20 transaksi beli di H1
 
@@ -78,17 +78,12 @@ def get_json(url: str, timeout: int = 10) -> Optional[Any]:
         return None
 
 def check_solana_security(mint: str) -> Dict[str, Any]:
-    """
-    Audit Keamanan Token Solana melalui RugCheck Public API:
-    - Freeze Authority Revoked?
-    - Mint Authority Revoked?
-    - Rug Score / Risk Status
-    """
+    """Audit Keamanan Token Solana melalui RugCheck Public API"""
     url = f"https://api.rugcheck.xyz/v1/tokens/{mint}/report/summary"
     data = get_json(url, timeout=6)
     
     if not data:
-        # Jika Rugcheck sedang timeout, gunakan verifikasi fallback DEX (Lolos dengan status verified DEX)
+        # Fallback jika RugCheck sedang timeout
         return {"safe": True, "freeze_revoked": True, "mint_revoked": True, "score": 0, "msg": "DEX Verified"}
         
     risks = data.get("risks", []) or []
@@ -112,7 +107,12 @@ def check_solana_security(mint: str) -> Dict[str, Any]:
     }
 
 def fetch_active_solana_candidates() -> List[str]:
-    """Mengambil kandidat koin Solana yang profilnya diupdate (CTO) atau divoting komunitas"""
+    """
+    Mengambil kandidat koin Solana dari 3 sumber sekaligus:
+    1. Token Profiles (indikasi dev ganti banner / CTO takeover)
+    2. Token Boosts di DexScreener
+    3. Multi-Search Trending Solana (Menangkap koin yang tidak bayar boost seperti $LEVERAGE)
+    """
     candidates = set()
     
     # 1. Token profiles
@@ -126,6 +126,15 @@ def fetch_active_solana_candidates() -> List[str]:
     for b in boosts:
         if b.get("chainId") == "solana" and b.get("tokenAddress"):
             candidates.add(b["tokenAddress"])
+
+    # 3. Multi-Search Trending Solana (Koin aktif tanpa bayar boost)
+    for q in ["pump", "sol", "cto", "meme"]:
+        search_res = get_json(f"https://api.dexscreener.com/latest/dex/search?q={q}") or {}
+        for pair in search_res.get("pairs", [])[:20]:
+            if pair.get("chainId") == "solana":
+                addr = pair.get("baseToken", {}).get("address")
+                if addr:
+                    candidates.add(addr)
             
     return list(candidates)
 
@@ -141,7 +150,7 @@ def evaluate_reversal_pair(pair: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     now_ms = time.time() * 1000
     age_hours = (now_ms - created_at) / 3600000.0
     
-    # 1. Pintu Umur (2 Jam s/d Tanpa Batas Umur)
+    # 1. Pintu Umur (1.0 Jam s/d Tanpa Batas Umur)
     if age_hours < MIN_TOKEN_AGE_HOURS or age_hours > MAX_TOKEN_AGE_HOURS:
         return None
         
@@ -183,7 +192,6 @@ def evaluate_reversal_pair(pair: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if unique_makers_h1 is not None:
         if unique_makers_h1 < MIN_UNIQUE_BUYERS_H1:
             stats["wash_rejected"] += 1
-            logger.info(f"🚫 [Anti-Wash] Token {base.get('symbol')} ditolak: Makers H1 ({unique_makers_h1}) < {MIN_UNIQUE_BUYERS_H1}")
             return None
         unique_buyers_est = unique_makers_h1
     else:
@@ -193,7 +201,6 @@ def evaluate_reversal_pair(pair: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     sec_audit = check_solana_security(mint)
     if not sec_audit["safe"]:
         stats["security_rejected"] += 1
-        logger.info(f"🚫 [Keamanan Gagal] Token {base.get('symbol')} terindikasi risiko ({sec_audit['msg']})")
         return None
 
     # --- TAHAP 2: PERHITUNGAN PRESTASI & SKOR (0 - 100) ---
@@ -352,11 +359,11 @@ def index():
     })
 
 if __name__ == "__main__":
-    # 1. Kirim Pesan Pembuka Konfirmasi Deploy ke Telegram
+    # 1. Kirim Notifikasi Konfirmasi Startup ke Telegram
     if TG_BOT_TOKEN and TG_CHAT_ID:
         try:
             startup_msg = """
-🤖 <b>REVERSAL SCANNER BOT ONLINE!</b>
+🤖 <b>REVERSAL SCANNER BOT v3.3 ONLINE!</b>
 ━━━━━━━━━━━━━━━━━━━━
 ✅ <b>Status:</b> Terhubung Berhasil ke Server Render
 📡 <b>Radar:</b> Solana Sleeping Giants & CTO Awakening
@@ -364,7 +371,7 @@ if __name__ == "__main__":
 • Anti-Wash Trading (Unique Buyers)
 • Anti-Honeypot / Freeze & Mint Check
 • Minimal Likuiditas: <code>$4,000</code>
-• Rentang Umur: <code>2 Jam s/d Tanpa Batas (&gt;90 Hari)</code>
+• Rentang Umur: <code>1.0 Jam s/d Tanpa Batas (&gt;90 Hari)</code>
 ━━━━━━━━━━━━━━━━━━━━
 🎯 <i>Radar memindai lonjakan volume & akumulasi koin tidur...</i>
 """
@@ -373,7 +380,7 @@ if __name__ == "__main__":
         except Exception as e:
             logger.error(f"Gagal mengirim notifikasi startup Telegram: {e}")
             
-    # 2. Jalankan background scanner thread
+    # 2. Jalankan scanner loop di background
     scanner_thread = threading.Thread(target=run_reversal_scanner_loop, daemon=True)
     scanner_thread.start()
     
