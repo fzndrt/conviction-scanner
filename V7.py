@@ -257,13 +257,12 @@ def fetch_all_solana_candidates() -> List[str]:
             if addr:
                 candidates.add(addr)
 
-    # KODE BARU (Lebih Cepat, Ringan & Efisien):
-search_res = get_json("https://api.dexscreener.com/latest/dex/search?q=SOL") or {}
-for pair in search_res.get("pairs", [])[:30]:
-    if pair.get("chainId") == "solana":
-        addr = pair.get("baseToken", {}).get("address")
-        if addr:
-            candidates.add(addr)
+    search_res = get_json("https://api.dexscreener.com/latest/dex/search?q=SOL") or {}
+    for pair in search_res.get("pairs", [])[:30]:
+        if pair.get("chainId") == "solana":
+            addr = pair.get("baseToken", {}).get("address")
+            if addr:
+                candidates.add(addr)
 
     return list(candidates)
 
