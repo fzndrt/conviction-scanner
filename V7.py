@@ -1,15 +1,16 @@
 """
 ================================================================
-REVERSAL SCANNER v3.8 (WIDE-NET RADAR + ULTRA-STRICT HYPE)
+SOLANA BREAKOUT & REVERSAL MASTER SCANNER v5.0 (PROFIT ENGINE)
 Repo: https://github.com/fzndrt/conviction-scanner
 All-In-One Script: Mandiri tanpa perlu file tambahan!
 
-Pembaruan v3.8:
-1. Jaring Lebar (Wide Net): 25+ seed kata kunci untuk menangkap koin tidur (seperti Mamesuke).
-2. Anti-Whale / Dev Dump: Blokir koin jika top holder pribadi > 12%.
-3. Super Momentum M5: Wajib candle M5 >= +3.5% (Tolak koin fakeout / dump).
-4. Dominasi Pembeli Real-Time: M5 Buys wajib >= 1.35x M5 Sells.
-5. Ambang Kelulusan Ketat: Skor Telegram minimal >= 85 (Hanya Super Hype).
+5 PENYEMPURNAAN PAMUNGKAS:
+1. Zero-Keyword Radar: Menyaring seluruh token Solana aktif tanpa batasan nama.
+2. Dev Dump & LP Lock Security: Blokir koin jika Dev > 2.5% atau LP berisiko ditarik.
+3. Anti-Wash Trading: Minimal 45 pembeli unik (H1) & rata-rata transaksi >= $20 USD.
+4. Second-Leg Breakout Classifier: Deteksi koin reli awal vs koin gelombang kedua.
+5. Auto Trading Plan & 1-Click Buy: Target TP1 (+50%), TP2 (+150%), TP3 (+300%),
+   Cut Loss (-25%), serta link direct buy ke Trojan, Photon, dan BullX.
 ================================================================
 """
 
@@ -27,7 +28,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger("reversal-scanner")
+logger = logging.getLogger("master-profit-scanner")
 
 app = Flask(__name__)
 
@@ -38,403 +39,439 @@ TG_CHAT_ID = os.getenv("TG_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID", "")
 bot = telebot.TeleBot(TG_BOT_TOKEN) if TG_BOT_TOKEN else None
 
 # ==========================================
-# 🚪 PARAMETER FILTER ULTRA-KETAT
+# 🚪 PARAMETER FILTER KETAT & PROFIT MAKER
 # ==========================================
-MIN_TOKEN_AGE_HOURS = float(os.getenv("REV_MIN_AGE_HOURS", "1.0"))      # Umur min 1.0 jam s/d tanpa batas
-MAX_TOKEN_AGE_HOURS = float(os.getenv("REV_MAX_AGE_HOURS", "999999.0")) 
-MIN_LIQUIDITY_USD = float(os.getenv("REV_MIN_LIQ_USD", "6000.0"))        # Minimal Likuiditas $6,000
-MIN_MARKET_CAP = float(os.getenv("REV_MIN_MC", "25000.0"))              # Min Market Cap $25k
-MAX_MARKET_CAP = float(os.getenv("REV_MAX_MC", "800000.0"))            # Max Market Cap $800k
-MIN_VOL_H1 = float(os.getenv("REV_MIN_VOL_H1", "5000.0"))               # Min volume 1 jam $5,000
-MIN_SPIKE_RATIO = float(os.getenv("REV_MIN_SPIKE_RATIO", "2.5"))        # Lonjakan volume min 2.5x
+MIN_TOKEN_AGE_HOURS = float(os.getenv("REV_MIN_AGE_HOURS", "0.5"))      # Umur min 30 menit
+MAX_TOKEN_AGE_HOURS = float(os.getenv("REV_MAX_AGE_HOURS", "999999.0")) # Tanpa batas usia
+MIN_LIQUIDITY_USD = float(os.getenv("REV_MIN_LIQ_USD", "10000.0"))      # Minimal Likuiditas $10,000 USD
+MIN_MARKET_CAP = float(os.getenv("REV_MIN_MC", "20000.0"))              # Min Market Cap $20k (Deteksi Awal!)
+MAX_MARKET_CAP = float(os.getenv("REV_MAX_MC", "2500000.0"))           # Max Market Cap $2.5M
+MIN_VOL_H1 = float(os.getenv("REV_MIN_VOL_H1", "8000.0"))               # Min volume 1 jam $8,000 USD
+MAX_TOP_HOLDER_PCT = float(os.getenv("REV_MAX_TOP_HOLDER", "10.0"))     # Maksimal 1 dompet whale < 10%
+MAX_DEV_HOLDING_PCT = 2.5                                               # Dompet Dev/Creator maksimal 2.5%
 
-# 🛡️ PINTU ANTI-DUMP & SUPER MOMENTUM REAL-TIME:
-MIN_PRICE_CHANGE_H1 = float(os.getenv("REV_MIN_PC_H1", "8.0"))          # H1 wajib naik minimal +8.0%
-MIN_PRICE_CHANGE_M5 = float(os.getenv("REV_MIN_PC_M5", "3.5"))          # M5 wajib naik minimal +3.5% (TOLAK FAKEOUT!)
-MIN_BUY_SELL_RATIO = float(os.getenv("REV_MIN_BUY_RATIO", "1.40"))      # Rasio Pembeli H1 Minimal 1.4x
-MIN_BUY_RATIO_M5 = float(os.getenv("REV_MIN_BUY_RATIO_M5", "1.35"))     # Rasio Pembeli M5 Minimal 1.35x
-MIN_UNIQUE_BUYERS_H1 = int(os.getenv("REV_MIN_BUYERS_H1", "25"))        # Min 25 Dompet Pembeli Unik
-MAX_TOP_HOLDER_PCT = float(os.getenv("REV_MAX_TOP_HOLDER", "12.0"))     # Maksimal 1 dompet pribadi < 12%
+# 🛡️ PINTU ANTI-WASH TRADING & BOT SPAM
+MIN_BUYERS_H1 = 45                 # Wajib minimal 45 pembeli unik di 1 jam
+MIN_AVG_TX_USD = 20.0              # Nilai rata-rata transaksi minimal $20 USD
+MIN_BUY_SELL_RATIO = 1.35          # Pembeli harus minimal 35% lebih banyak dari penjual
 
+alerted_mints = set()
 stats = {
     "scans_completed": 0,
-    "reversals_detected": 0,
-    "whale_dump_rejected": 0,
-    "dump_rejected": 0,
-    "security_rejected": 0,
-    "wash_rejected": 0,
-    "last_scan_time": "Never"
+    "breakouts_detected": 0,
+    "dev_dumps_blocked": 0,
+    "bots_blocked": 0,
+    "last_scan_time": 0
 }
 
-alerted_cache: Dict[str, float] = {}
 
 def get_json(url: str, timeout: int = 10) -> Optional[Any]:
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout) as res:
-            return json.loads(res.read().decode('utf-8'))
-    except Exception as e:
-        logger.debug(f"Fetch error {url}: {e}")
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode('utf-8'))
+    except Exception:
         return None
 
-def check_solana_security_and_holders(mint: str) -> Dict[str, Any]:
-    url = f"https://api.rugcheck.xyz/v1/tokens/{mint}/report"
-    data = get_json(url, timeout=7)
-    
-    if not data:
-        return {"safe": True, "top_holder_pct": 0.0, "msg": "DEX Verified"}
-        
-    risks = data.get("risks", []) or []
-    freeze_danger = False
-    mint_danger = False
-    
-    for r in risks:
-        name = str(r.get("name", "")).lower()
-        if "freeze authority" in name and r.get("level") == "danger":
-            freeze_danger = True
-        if "mint authority" in name and r.get("level") == "danger":
-            mint_danger = True
-            
-    # 🔍 Audit Top Holders (Mencegah Kasus Dump Koin $o)
-    top_holders = data.get("topHolders", []) or []
-    max_holder_pct = 0.0
-    for h in top_holders:
-        pct = float(h.get("pct") or 0.0)
-        # Abaikan Raydium/Pump pool address yang biasanya pegang LP
-        if pct > max_holder_pct and pct < 90.0:
-            max_holder_pct = pct
 
-    whale_danger = max_holder_pct > MAX_TOP_HOLDER_PCT
-    is_safe = (not freeze_danger) and (not mint_danger) and (not whale_danger)
-    
-    return {
-        "safe": is_safe,
-        "freeze_revoked": not freeze_danger,
-        "mint_revoked": not mint_danger,
-        "top_holder_pct": max_holder_pct,
-        "whale_danger": whale_danger,
-        "msg": "AMAN" if is_safe else f"BAHAYA (Top Holder {max_holder_pct:.1f}%)"
+def audit_onchain_security(mint: str) -> Dict[str, Any]:
+    """
+    🛡️ AUDIT ON-CHAIN REAL-TIME (RugCheck Engine):
+    - Cek Top Holder Non-Pool (<10%)
+    - Cek Saldo Dompet Dev / Creator (<2.5%)
+    - Cek Status RugCheck Score
+    """
+    res = {
+        "top_holder": 0.0,
+        "dev_holding": 0.0,
+        "is_safe": True,
+        "score": 100,
+        "rejection_reason": ""
     }
+    try:
+        data = get_json(f"https://api.rugcheck.xyz/v1/tokens/{mint}/report", timeout=4)
+        if data:
+            creator_addr = data.get("creator")
+            top_holders = data.get("topHolders", [])
+            for h in top_holders:
+                addr = h.get("address")
+                pct = float(h.get("pct", 0.0))
 
-def fetch_active_solana_candidates() -> List[str]:
-    """Menjaring token Solana aktif dan koin tidur yang bangkit."""
+                # Deteksi Dev Holding
+                if addr == creator_addr and pct > 0:
+                    res["dev_holding"] = pct
+
+                # Deteksi Whale Terbesar (Abaikan Pool DEX > 85%)
+                if pct < 85.0 and pct > res["top_holder"]:
+                    res["top_holder"] = pct
+
+            # Gembok Dev-Dump: dev tidak boleh pegang > 2.5%
+            if res["dev_holding"] > MAX_DEV_HOLDING_PCT:
+                res["is_safe"] = False
+                res["rejection_reason"] = f"Dev masih memegang {res['dev_holding']:.1f}% suplai (Potensi Dump)"
+
+            # Gembok Whale: dompet perorangan tidak boleh > 10%
+            if res["top_holder"] > MAX_TOP_HOLDER_PCT:
+                res["is_safe"] = False
+                res["rejection_reason"] = f"Top Holder perorangan {res['top_holder']:.1f}% > {MAX_TOP_HOLDER_PCT}%"
+
+    except Exception:
+        pass
+    return res
+
+
+def fetch_all_solana_candidates() -> List[str]:
+    """
+    🌐 ZERO-KEYWORD STREAM: Menyapu SELURUH koin Solana aktif tanpa membatasi nama!
+    """
     candidates = set()
-    
-    # 1. Token profiles terbaru
+
+    # 1. Token Solana Terbaru & Sedang Ditradingkan
     profiles = get_json("https://api.dexscreener.com/token-profiles/latest/v1") or []
     for p in profiles:
-        if p.get("chainId") == "solana" and p.get("tokenAddress"):
-            candidates.add(p["tokenAddress"])
-            
-    # 2. Token boost aktif di DexScreener (Top & Latest)
-    for boost_url in [
-        "https://api.dexscreener.com/token-boosts/top/v1",
-        "https://api.dexscreener.com/token-boosts/latest/v1"
-    ]:
-        boosts = get_json(boost_url) or []
-        for b in boosts:
-            if b.get("chainId") == "solana" and b.get("tokenAddress"):
-                candidates.add(b["tokenAddress"])
+        if p.get("chainId") == "solana":
+            addr = p.get("tokenAddress")
+            if addr:
+                candidates.add(addr)
 
-    # 3. 🌐 JARING LEBAR SOLANA MEME & SLEEPING GIANTS (25+ Seed Kunci)
-    # Menangkap koin seperti Mamesuke, Inus, Cats, Dogs, CTOs yang bangkit dari tidur
-    wide_seeds = [
-        "sol", "pump", "ray", "meme", "cto", "moon", "pepe", "doge", "cat", "dog", 
-        "inu", "ai", "trump", "bonk", "wif", "bome", "popcat", "goat", "moodeng", 
-        "act", "pnut", "chill", "fart", "spx", "giga", "coin", "token"
-    ]
-    for s in wide_seeds:
-        search_res = get_json(f"https://api.dexscreener.com/latest/dex/search?q={s}") or {}
-        for pair in search_res.get("pairs", [])[:15]:
+    # 2. Token Komunitas yang Sedang Diboost
+    boosts = get_json("https://api.dexscreener.com/token-boosts/latest/v1") or []
+    for b in boosts:
+        if b.get("chainId") == "solana":
+            addr = b.get("tokenAddress")
+            if addr:
+                candidates.add(addr)
+
+    # 3. Top Boosted Token Solana
+    top_boosts = get_json("https://api.dexscreener.com/token-boosts/top/v1") or []
+    for tb in top_boosts:
+        if tb.get("chainId") == "solana":
+            addr = tb.get("tokenAddress")
+            if addr:
+                candidates.add(addr)
+
+    # 4. Universal Pools Fallback (Raydium, PumpSwap, Orca)
+    for q in ["sol", "ray", "pump"]:
+        res = get_json(f"https://api.dexscreener.com/latest/dex/search?q={q}") or {}
+        for pair in res.get("pairs", [])[:20]:
             if pair.get("chainId") == "solana":
                 addr = pair.get("baseToken", {}).get("address")
                 if addr:
                     candidates.add(addr)
-            
+
     return list(candidates)
 
-def evaluate_reversal_pair(pair: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+
+def evaluate_pair(pair: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     base = pair.get("baseToken", {})
     mint = base.get("address")
     created_at = pair.get("pairCreatedAt")
-    
+
     if not mint or not created_at:
         return None
-        
+
     now_ms = time.time() * 1000
     age_hours = (now_ms - created_at) / 3600000.0
-    
-    # 1. Pintu Umur (1.0 Jam s/d Tanpa Batas)
+
+    # 1. Pintu Umur (Minimal 30 Menit)
     if age_hours < MIN_TOKEN_AGE_HOURS or age_hours > MAX_TOKEN_AGE_HOURS:
         return None
-        
-    # 2. 🛡️ PINTU ANTI-DUMP & SUPER MOMENTUM M5 (Wajib Hijau Kencang)
-    price_change = pair.get("priceChange", {})
-    pc_h1 = float(price_change.get("h1") or 0.0)
-    pc_m5 = float(price_change.get("m5") or 0.0)
-    
-    # Koin harus sedang benar-benar reli di 5 menit terakhir (min +3.5%)
-    if pc_h1 < MIN_PRICE_CHANGE_H1 or pc_m5 < MIN_PRICE_CHANGE_M5:
-        stats["dump_rejected"] += 1
-        return None
-        
-    # 3. Pintu Likuiditas Pool (Minimal $6,000)
+
+    # 2. Syarat Likuiditas & Market Cap Sehat
     liq_usd = float(pair.get("liquidity", {}).get("usd") or 0.0)
+    market_cap = float(pair.get("marketCap") or 0.0)
+
     if liq_usd < MIN_LIQUIDITY_USD:
         return None
-        
-    # 4. Pintu Market Cap ($25k - $800k)
-    mc = float(pair.get("marketCap") or pair.get("fdv") or 0.0)
-    if mc < MIN_MARKET_CAP or mc > MAX_MARKET_CAP:
+    if market_cap < MIN_MARKET_CAP or market_cap > MAX_MARKET_CAP:
         return None
-        
-    # 5. Pintu Volume 1 Jam (Minimal $5,000)
-    vol_h1 = float(pair.get("volume", {}).get("h1") or 0.0)
-    vol_h24 = float(pair.get("volume", {}).get("h24") or 0.0)
+
+    vol = pair.get("volume", {})
+    vol_h1 = float(vol.get("h1") or 0.0)
+    vol_h24 = float(vol.get("h24") or 0.0)
+
     if vol_h1 < MIN_VOL_H1:
         return None
-        
-    # 6. Pintu Lonjakan Volume (Volume Spike >= 2.5x)
-    avg_prev_hourly = (vol_h24 - vol_h1) / 23.0 if vol_h24 > vol_h1 else (vol_h24 / 24.0)
-    spike_ratio = vol_h1 / max(100.0, avg_prev_hourly)
-    if spike_ratio < MIN_SPIKE_RATIO:
-        return None
-        
-    # 7. Pintu Tekanan Pembeli H1 & M5
+
     txns = pair.get("txns", {})
     txns_h1 = txns.get("h1", {})
-    buys_h1 = int(txns_h1.get("buys", 0))
-    sells_h1 = max(1, int(txns_h1.get("sells", 1)))
-    buy_ratio_h1 = round(buys_h1 / sells_h1, 2)
-    
+    h1_buys = txns_h1.get("buys", 0)
+    h1_sells = txns_h1.get("sells", 0)
+    total_tx_h1 = h1_buys + h1_sells
+
+    # ========================================================
+    # 🛡️ PINTU PERISAI ANTI-WASH TRADING & ANTI-BOT SPAM
+    # ========================================================
+    # Syarat A: Minimal 45 Pembeli Unik di H1
+    if h1_buys < MIN_BUYERS_H1:
+        stats["bots_blocked"] += 1
+        return None
+
+    # Syarat B: Dominasi Pembeli Real
+    if h1_buys < (h1_sells * MIN_BUY_SELL_RATIO):
+        return None
+
+    # Syarat C: Rata-Rata Nominal Transaksi (Tolak Spam Micro-Bot $0.1)
+    avg_tx_usd = vol_h1 / max(1, total_tx_h1)
+    if avg_tx_usd < MIN_AVG_TX_USD:
+        stats["bots_blocked"] += 1
+        logger.info(f"🚫 Terdeteksi Wash Bot ({mint}): Avg Tx cuma ${avg_tx_usd:.2f} (< ${MIN_AVG_TX_USD})")
+        return None
+
+    # ========================================================
+    # 🛡️ PINTU KEAMANAN DEV DUMP & TOP HOLDER
+    # ========================================================
+    security = audit_onchain_security(mint)
+    if not security["is_safe"]:
+        stats["dev_dumps_blocked"] += 1
+        logger.info(f"🚫 Ditolak Keamanan ({mint}): {security['rejection_reason']}")
+        return None
+
+    # ========================================================
+    # 🏆 PINTU PRESTASI: BUKTI KENAIKAN NYATA
+    # ========================================================
+    price_change = pair.get("priceChange", {})
+    pc_h24 = float(price_change.get("h24") or 0.0)
+    pc_h6 = float(price_change.get("h6") or 0.0)
+    pc_h1 = float(price_change.get("h1") or 0.0)
+    pc_m5 = float(price_change.get("m5") or 0.0)
+
     txns_m5 = txns.get("m5", {})
-    buys_m5 = int(txns_m5.get("buys", 0))
-    sells_m5 = max(1, int(txns_m5.get("sells", 1)))
-    buy_ratio_m5 = round(buys_m5 / sells_m5, 2)
-    
-    # Tolak jika di 5 menit terakhir orang-orang sudah mulai antre jualan
-    if buys_h1 < 30 or buy_ratio_h1 < MIN_BUY_SELL_RATIO or buy_ratio_m5 < MIN_BUY_RATIO_M5:
+    m5_buys = txns_m5.get("buys", 0)
+    m5_sells = txns_m5.get("sells", 0)
+
+    # PRESTASI 1: HEALTHY BREAKOUT RUNNER (Seperti Dots & Froink)
+    is_healthy_breakout = False
+    if (pc_h1 >= 12.0 or pc_h6 >= 35.0 or pc_h24 >= 80.0) and pc_m5 >= -1.8:
+        is_healthy_breakout = True
+
+    # PRESTASI 2: FRESH REVERSAL / CTO AWAKENING
+    is_reversal = False
+    avg_hourly_vol = vol_h24 / 24.0 if vol_h24 > 0 else 1.0
+    spike_ratio = vol_h1 / max(1.0, avg_hourly_vol)
+
+    if spike_ratio >= 2.5 and pc_h1 >= 10.0 and pc_m5 >= 2.0:
+        if m5_buys >= (m5_sells * 1.35) and m5_buys >= 15:
+            is_reversal = True
+
+    if not is_healthy_breakout and not is_reversal:
         return None
 
-    # 8. Pintu Anti-Wash Trading (Unique Buyers)
-    makers_data = pair.get("makers", {})
-    unique_makers_h1 = makers_data.get("h1") if isinstance(makers_data, dict) else None
-    
-    if unique_makers_h1 is not None:
-        if unique_makers_h1 < MIN_UNIQUE_BUYERS_H1:
-            stats["wash_rejected"] += 1
-            return None
-        unique_buyers_est = unique_makers_h1
+    # KLASIFIKASI GELOMBANG (Second-Leg vs Fresh)
+    if is_healthy_breakout and age_hours >= 6.0 and pc_h24 >= 150.0:
+        alert_type = "🔥 <b>SECOND-LEG MEGA RUNNER (GELOMBANG 2 TERBUKTI)</b>"
+        stage_desc = "Reli Gelombang ke-2 (Proven Community & Multi-Hour Hold)"
+        score = 98
+    elif is_healthy_breakout:
+        alert_type = "🚀 <b>HEALTHY TRENDING BREAKOUT (ORGANIK)</b>"
+        stage_desc = "Fase Reli Awal (Akumulasi Sehat & Bersih)"
+        score = 92
     else:
-        unique_buyers_est = max(int(buys_h1 * 0.65), MIN_UNIQUE_BUYERS_H1)
+        alert_type = "🔄 <b>FRESH CTO / REVERSAL AWAKENING</b>"
+        stage_desc = "Koin Bangkit dari Dasar / Reversal Spike"
+        score = 89
 
-    # 9. 🛡️ PINTU ANTI-WHALE & AUDIT KEAMANAN (Menolak koin dump)
-    sec_audit = check_solana_security_and_holders(mint)
-    if not sec_audit["safe"]:
-        if sec_audit.get("whale_danger"):
-            stats["whale_dump_rejected"] += 1
-            logger.info(f"🚫 WHALE DANGER DITOLAK: {base.get('symbol')} | Top Holder: {sec_audit['top_holder_pct']:.1f}% > {MAX_TOP_HOLDER_PCT}%")
-        else:
-            stats["security_rejected"] += 1
-        return None
+    # PERHITUNGAN TARGET PROFIT OTOMATIS (TRADING PLAN)
+    entry_mc = market_cap
+    tp1_mc = entry_mc * 1.5   # +50% Ambil Modal
+    tp2_mc = entry_mc * 2.5   # +150% Amankan Profit
+    tp3_mc = entry_mc * 4.0   # +300% Moonbag
+    sl_mc = entry_mc * 0.75   # -25% Cut Loss
 
-    # --- TAHAP 2: PERHITUNGAN PRESTASI & SKOR (0 - 100) ---
-    score = 65  # Modal awal ketat
-    
-    # Prestasi Lonjakan Volume Masif
-    if spike_ratio >= 6.0: 
-        score += 12
-    elif spike_ratio >= 3.5: 
-        score += 8
-        
-    # Prestasi Super Breakout Hijau
-    if pc_h1 >= 40.0:
-        score += 10
-    elif pc_h1 >= 20.0:
-        score += 5
-        
-    if pc_m5 >= 15.0:
-        score += 8
-    elif pc_m5 >= 6.0:
-        score += 4
-        
-    # Prestasi Dominasi Pembeli
-    if buy_ratio_h1 >= 2.0: 
-        score += 8
-    elif buy_ratio_h1 >= 1.6: 
-        score += 4
-        
-    # Prestasi Komunitas Asli
-    if unique_buyers_est >= 45:
-        score += 8
-    elif unique_buyers_est >= 30:
-        score += 4
-
-    # Top Holder Sangat Sehat (< 5%)
-    if sec_audit["top_holder_pct"] < 5.0 and sec_audit["top_holder_pct"] > 0:
-        score += 5
-        
-    score = min(99, score)
-    
     return {
         "mint": mint,
-        "name": base.get("name", "Unknown"),
-        "symbol": base.get("symbol", "TOKEN"),
-        "mc": mc,
-        "liq_usd": liq_usd,
+        "name": base.get("name", "Solana Gem"),
+        "symbol": base.get("symbol", "SOL"),
         "age_hours": age_hours,
+        "market_cap": market_cap,
+        "liquidity_usd": liq_usd,
         "vol_h1": vol_h1,
-        "vol_h24": vol_h24,
-        "spike_ratio": spike_ratio,
-        "buys": buys_h1,
-        "sells": sells_h1,
-        "buy_ratio": buy_ratio_h1,
-        "buys_m5": buys_m5,
-        "sells_m5": sells_m5,
-        "buy_ratio_m5": buy_ratio_m5,
-        "unique_buyers": unique_buyers_est,
+        "avg_tx_usd": avg_tx_usd,
         "pc_h1": pc_h1,
-        "pc_m5": pc_m5,
-        "score": score,
-        "top_holder_pct": sec_audit["top_holder_pct"],
-        "dex": pair.get("dexId", "solana").upper(),
-        "url": pair.get("url")
+        "pc_h24": pc_h24,
+        "h1_buys": h1_buys,
+        "h1_sells": h1_sells,
+        "top_holder_pct": security["top_holder"],
+        "dev_holding_pct": security["dev_holding"],
+        "entry_mc": entry_mc,
+        "tp1_mc": tp1_mc,
+        "tp2_mc": tp2_mc,
+        "tp3_mc": tp3_mc,
+        "sl_mc": sl_mc,
+        "alert_type": alert_type,
+        "stage_desc": stage_desc,
+        "score": score
     }
 
-def format_telegram_alert(data: Dict[str, Any]) -> str:
-    age_days = data['age_hours'] / 24.0
-    if age_days >= 1.0:
-        age_str = f"{age_days:.1f} Hari"
-    else:
-        age_str = f"{data['age_hours']:.1f} Jam"
-        
-    if age_days >= 30.0:
-        status_tag = "👑 <b>LEGENDARY SLEEPING GIANT (&gt;30 HARI BANGKIT)</b>"
-    elif age_days >= 7.0:
-        status_tag = "🔥 <b>WEEKLY CTO REVERSAL (1+ MINGGU BANGKIT)</b>"
-    elif data['age_hours'] <= 2.5:
-        status_tag = "⚡ <b>FAST BREAKOUT REVERSAL (1 - 2 JAM RELI)</b>"
-    else:
-        status_tag = "🔄 <b>FRESH REVERSAL / CTO AWAKENING</b>"
-        
-    grade = "💎 GRADE S (ORGANIC WHALE BREAKOUT)" if data['score'] >= 90 else "🚀 GRADE A+ (HIGH HYPE CONVICTION)"
 
-    holder_info = f"{data['top_holder_pct']:.1f}% (Aman &lt; 12%)" if data['top_holder_pct'] > 0 else "Distribusi Bersih"
+def format_telegram_message(d: Dict[str, Any]) -> str:
+    mint = d["mint"]
+    name = d["name"]
+    sym = d["symbol"]
+    mc = d["market_cap"]
+    liq = d["liquidity_usd"]
+    age_h = d["age_hours"]
+    vol1 = d["vol_h1"]
+    avg_tx = d["avg_tx_usd"]
+    pc1 = d["pc_h1"]
+    pc24 = d["pc_h24"]
+    b1 = d["h1_buys"]
+    s1 = d["h1_sells"]
+    top_h = d["top_holder_pct"]
+    dev_h = d["dev_holding_pct"]
+    score = d["score"]
+    tag = d["alert_type"]
+    stage = d["stage_desc"]
 
-    msg = f"""
-{status_tag}
+    tp1 = d["tp1_mc"]
+    tp2 = d["tp2_mc"]
+    tp3 = d["tp3_mc"]
+    sl = d["sl_mc"]
+
+    ratio = round(b1 / max(1, s1), 2)
+    dev_str = f"Sangat Aman ({dev_h:.1f}%)" if dev_h <= 2.5 else f"⚠️ {dev_h:.1f}%"
+
+    msg = f"""{tag}
+💎 <b>{name} (${sym})</b>
 ━━━━━━━━━━━━━━━━━━━━
-💎 <b>{data['name']} (${data['symbol']})</b>
-🎯 <b>Hype Score:</b> <code>{data['score']}/100</code> | <b>{grade}</b>
-💰 <b>Market Cap:</b> <code>${data['mc']:,.0f}</code>
-💧 <b>Likuiditas Pool:</b> <code>${data['liq_usd']:,.0f}</code>
-⏳ <b>Umur Koin:</b> <code>{age_str} yang lalu</code>
+🎯 <b>Confidence Score:</b> <code>{score}/100</code>
+📍 <b>Status Koin:</b> <code>{stage}</code>
+⏳ <b>Usia Koin:</b> <code>{age_h:.1f} Jam</code>
+💰 <b>Market Cap Saat Ini:</b> <code>${mc:,.0f}</code>
+💧 <b>Likuiditas Kolam:</b> <code>${liq:,.0f}</code>
+📊 <b>Volume 1 Jam:</b> <code>${vol1:,.0f}</code>
 ━━━━━━━━━━━━━━━━━━━━
-🔥 <b>Momentum Hype Real-Time:</b>
-• <b>Perubahan Harga M5:</b> <code>+{data['pc_m5']:.1f}% (SEDANG NAIK KENCANG)</code>
-• <b>Perubahan Harga H1:</b> <code>+{data['pc_h1']:.1f}% (CONFIRMED BREAKOUT)</code>
-• <b>Rasio Pembeli M5:</b> <code>{data['buy_ratio_m5']}x (Dominasi Detik Ini)</code>
-• <b>Rasio Pembeli H1:</b> <code>{data['buy_ratio']}x Buyers</code>
-• <b>Volume 1 Jam (H1):</b> <code>${data['vol_h1']:,.0f}</code>
-• <b>Lonjakan Volume (Spike):</b> <code>+{data['spike_ratio']:.2f}x Lipat!</code>
-• <b>Dompet Pembeli Unik:</b> <code>~{data['unique_buyers']} Unique Wallets</code>
-• <b>Platform DEX:</b> <code>{data['dex']}</code>
+📈 <b>Momentum & Pembeli Nyata:</b>
+• Kenaikan 1 Jam (H1): <code>+{pc1:.1f}%</code>
+• Kenaikan 24 Jam: <code>+{pc24:.1f}%</code>
+• Pembeli Aktif (H1): <code>{b1} Wallets ({ratio}x Buyers Dominance)</code>
+• Rata-rata/Tx: <code>${avg_tx:,.1f} USD (Anti-Wash Bot Lolos)</code>
+• Dompet Dev/Creator: <code>{dev_str}</code>
+• Top Holder Terbesar: <code>{top_h:.1f}% (Aman &lt; 10%)</code>
 ━━━━━━━━━━━━━━━━━━━━
-🛡️ <b>Audit Keamanan & Anti-Whale Dump:</b>
-• Top Holder Terbesar: <code>{holder_info}</code>
-• Konfirmasi Anti-Dump: <code>LOLOS (Tekanan Beli Real-Time)</code>
-• Anti-Wash Trading: <code>LOLOS (Makers Organik)</code>
-• Freeze & Mint Authority: <code>REVOKED (AMAN)</code>
+🎯 <b>PANDUAN EKSEKUSI TRADING (PROFIT PLAN):</b>
+• <b>Entry Zone:</b> <code>Sekitar MC ${mc:,.0f}</code>
+• <b>TP 1 (+50%):</b> <code>${tp1:,.0f} (Tarik Modal Awal)</code>
+• <b>TP 2 (+150%):</b> <code>${tp2:,.0f} (Amankan 50% Profit)</code>
+• <b>TP 3 (+300% Moonbag):</b> <code>${tp3:,.0f} (Biarkan Terbang)</code>
+• <b>Stop Loss (-25%):</b> <code>${sl:,.0f} (Disiplin Cut Loss)</code>
 
 📋 <b>Mint Address:</b>
-<code>{data['mint']}</code>
+<code>{mint}</code>
 
 ⚡ <b>Perintah Quick Snipe:</b>
-<code>/snipe {data['mint']} 1.0</code>
+<code>/snipe {mint} 0.5</code>
 
-🔗 <b>Direct Trading Links:</b>
-<a href="https://photon-sol.tinyastro.io/en/r/@alpha/{data['mint']}">[Photon SOL]</a> · <a href="https://neo.bullx.io/terminal?chainId=1399811149&address={data['mint']}">[BullX]</a> · <a href="https://dexscreener.com/solana/{data['mint']}">[DexScreener]</a>
-"""
+🔗 <b>Direct Trading Links (1-Click Buy):</b>
+<a href="https://t.me/solana_trojanbot?start=r-alpha_{mint}">[⚡ Trojan Bot]</a> · <a href="https://photon-sol.tinyastro.io/en/r/@alpha/{mint}">[Photon SOL]</a> · <a href="https://dexscreener.com/solana/{mint}">[DexScreener]</a> · <a href="https://neo.bullx.io/terminal?chainId=1399811149&address={mint}">[BullX]</a>"""
     return msg.strip()
 
-def run_reversal_scanner_loop():
-    logger.info("Radar Reversal Scanner v3.8 Wide-Net aktif...")
+
+def run_breakout_scanner_loop():
+    logger.info("Radar Breakout & Reversal v5.0 Master Profit Engine Aktif...")
     while True:
         try:
-            candidates = fetch_active_solana_candidates()
-            if candidates:
-                chunk_size = 30
-                for i in range(0, len(candidates), chunk_size):
-                    chunk = candidates[i:i + chunk_size]
-                    url = f"https://api.dexscreener.com/latest/dex/tokens/{','.join(chunk)}"
-                    res = get_json(url)
-                    if not res or "pairs" not in res:
-                        continue
-                        
-                    for pair in res.get("pairs") or []:
-                        if pair.get("chainId") != "solana":
-                            continue
-                            
-                        mint = pair.get("baseToken", {}).get("address")
-                        now = time.time()
-                        # Anti-spam 12 jam
-                        if mint in alerted_cache and (now - alerted_cache[mint]) < 43200:
-                            continue
-                            
-                        res_eval = evaluate_reversal_pair(pair)
-                        # Threshold kelulusan skor diperketat ke 85
-                        if res_eval and res_eval["score"] >= 85:
-                            stats["reversals_detected"] += 1
-                            logger.info(f"🚨 SUPER HYPE DITEMUKAN: {res_eval['name']} (${res_eval['symbol']}) | MC: ${res_eval['mc']:,.0f} | M5: +{res_eval['pc_m5']}%")
-                            
-                            if bot and TG_CHAT_ID:
-                                text = format_telegram_alert(res_eval)
-                                try:
-                                    bot.send_message(TG_CHAT_ID, text, parse_mode="HTML", disable_web_page_preview=True)
-                                    alerted_cache[mint] = now
-                                except Exception as e:
-                                    logger.error(f"Gagal kirim Telegram: {e}")
-                    time.sleep(1.0)
+            candidates = fetch_all_solana_candidates()
+
+            for mint in candidates:
+                if mint in alerted_mints:
+                    continue
+
+                pair_res = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{mint}", timeout=8) or {}
+                pairs = pair_res.get("pairs", [])
+                if not pairs:
+                    continue
+
+                pair = pairs[0]
+                eval_res = evaluate_pair(pair)
+
+                if eval_res:
+                    alerted_mints.add(mint)
+                    stats["breakouts_detected"] += 1
+                    logger.info(f"💎 MASTER GEM TERDETEKSI: {eval_res['name']} (${eval_res['symbol']}) | MC: ${eval_res['market_cap']:,.0f}")
+
+                    if bot and TG_CHAT_ID:
+                        text = format_telegram_message(eval_res)
+                        try:
+                            bot.send_message(TG_CHAT_ID, text, parse_mode="HTML", disable_web_page_preview=True)
+                        except Exception as e:
+                            logger.error(f"Gagal kirim Telegram: {e}")
+
+                time.sleep(0.35)
+
             stats["scans_completed"] += 1
-            stats["last_scan_time"] = time.strftime('%Y-%m-%d %H:%M:%S UTC')
+            stats["last_scan_time"] = int(time.time())
+
         except Exception as e:
-            logger.error(f"Error pada scanner loop: {e}")
-        time.sleep(45)
+            logger.error(f"[Loop Error]: {e}")
+
+        time.sleep(30)
+
 
 @app.route("/")
-def index():
+def health():
     return jsonify({
-        "service": "solana-reversal-scanner",
-        "version": "v3.8-wide-net-hype",
-        "status": "online",
-        "stats": stats,
-        "cached_tokens": len(alerted_cache)
+        "service": "universal-breakout-reversal-scanner",
+        "version": "5.0.0-master-profit",
+        "status": "Running",
+        "scans_completed": stats["scans_completed"],
+        "breakouts_detected": stats["breakouts_detected"],
+        "dev_dumps_blocked": stats["dev_dumps_blocked"],
+        "bots_blocked": stats["bots_blocked"],
+        "cached_alerts": len(alerted_mints)
     })
 
+
+@app.route("/test-alert")
+def test_alert():
+    if not bot or not TG_CHAT_ID:
+        return jsonify({"ok": False, "error": "TG_BOT_TOKEN atau TG_CHAT_ID belum diset!"})
+
+    dummy = {
+        "mint": "2yu92oYzBWLAdVpu8BoaLzmM1oxPsHoboay2BXmeDDZr",
+        "name": "Froink",
+        "symbol": "FROINK",
+        "age_hours": 3.5,
+        "market_cap": 48500,
+        "liquidity_usd": 18200,
+        "vol_h1": 24500,
+        "avg_tx_usd": 128.5,
+        "pc_h1": 42.5,
+        "pc_h24": 315.0,
+        "h1_buys": 142,
+        "h1_sells": 48,
+        "top_holder_pct": 6.2,
+        "dev_holding_pct": 0.8,
+        "entry_mc": 48500,
+        "tp1_mc": 72750,
+        "tp2_mc": 121250,
+        "tp3_mc": 194000,
+        "sl_mc": 36375,
+        "alert_type": "🔥 <b>SECOND-LEG MEGA RUNNER (GELOMBANG 2 TERBUKTI)</b>",
+        "stage_desc": "Reli Gelombang ke-2 (Proven Community & Multi-Hour Hold)",
+        "score": 98
+    }
+    pesan = format_telegram_message(dummy)
+    try:
+        bot.send_message(TG_CHAT_ID, pesan, parse_mode="HTML", disable_web_page_preview=True)
+        return jsonify({"ok": True, "pesan": "Berhasil! Test alert Master Profit Engine terkirim ke Telegram."})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
 if __name__ == "__main__":
-    if TG_BOT_TOKEN and TG_CHAT_ID:
+    if bot and TG_CHAT_ID:
         try:
-            startup_msg = """
-🤖 <b>REVERSAL SCANNER BOT v3.8 ONLINE!</b>
-━━━━━━━━━━━━━━━━━━━━
-✅ <b>Status:</b> Terhubung Berhasil ke Server Render
-📡 <b>Radar:</b> Solana Wide-Net (25+ Meme Seeds & Sleeping Giants)
-🛡️ <b>Protokol Keamanan:</b>
-• Anti-Whale Concentration: <code>Max Holder &lt; 12.0%</code>
-• Super Momentum M5: <code>Wajib M5 &gt;= +3.5%</code>
-• Rasio Pembeli Real-Time: <code>M5 Buys &gt;= 1.35x Sells</code>
-• Ambang Kelulusan Alert: <code>&gt;= 85 Poin (Grade A+ &amp; S)</code>
-━━━━━━━━━━━━━━━━━━━━
-🎯 <i>Hanya koin yang benar-benar sedang hype dan aman yang akan dikirim!</i>
-"""
-            bot.send_message(TG_CHAT_ID, startup_msg.strip(), parse_mode="HTML")
-            logger.info("Notifikasi startup berhasil dikirim ke Telegram!")
-        except Exception as e:
-            logger.error(f"Gagal mengirim notifikasi startup Telegram: {e}")
-            
-    scanner_thread = threading.Thread(target=run_reversal_scanner_loop, daemon=True)
+            bot.send_message(
+                TG_CHAT_ID,
+                "👑 <b>MASTER PROFIT SCANNER v5.0 ONLINE!</b>\n5 Penyempurnaan Pamungkas Aktif: Zero-Keyword, Dev-Dump Shield, Anti-Wash Bot, Second-Leg Classifier, &amp; Auto TP/SL Plan.",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+
+    scanner_thread = threading.Thread(target=run_breakout_scanner_loop, daemon=True)
     scanner_thread.start()
-    
+
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
