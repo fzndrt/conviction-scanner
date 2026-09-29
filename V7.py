@@ -45,7 +45,7 @@ bot = telebot.TeleBot(TG_BOT_TOKEN) if TG_BOT_TOKEN else None
 MIN_TOKEN_AGE_HOURS = 0.4            # Minimal usia 25 menit
 MIN_LIQUIDITY_USD = 15000.0          # Minimal Likuiditas $15.000 USD
 MIN_MARKET_CAP = 25000.0             # ⭐ Min MC $25.000 USD (Early Capture)
-MAX_MARKET_CAP = 350000.0            # ⭐ Max MC $350.000 USD (Growth Zone)
+MAX_MARKET_CAP = 450000.0            # ⭐ Max MC $350.000 USD (Growth Zone)
 MIN_VOL_H1 = 9000.0                  # Min volume 1 jam $9,000 USD
 
 # 🟢 TRIPLE GREEN LOCK (HANYA MENDETEKSI KENAIKAN / ANTI-PENURUNAN)
