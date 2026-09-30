@@ -57,16 +57,15 @@ MAX_MARKET_CAP = 350000.0            # ⭐ Max MC diperluas hingga $2.5 Juta USD
 MIN_VOL_H1 = 8000.0                  # Min volume 1 jam $8,000 USD
 
 # 🟢 TRIPLE GREEN LOCK ADAPTIF (HANYA KENAIKAN / TOLAK PENURUNAN)
-MIN_PC_M5 = 1.0                      # ⭐ Menit ini (M5) WAJIB HIJAU >= +1.0%
-MIN_PC_H1 = 10.0                     # ⭐ 1 Jam (H1) WAJIB HIJAU >= +10.0%
-MAX_PC_H1 = 250.0                    # Plafon H1 Max +250% (Fleksibel untuk koin breakout kencang)
+MIN_PC_M5 = 3.5                      # ⭐ M5 WAJIB HIJAU >= +3.5% (Tolak koin lesu/koreksi)
+MIN_PC_H1 = 12.0                     # ⭐ 1 Jam (H1) WAJIB HIJAU >= +12.0%
+MAX_PC_H1 = 250.0                    # Plafon H1 Max +250%
 MAX_PC_H24_INITIAL = 500.0           # Batas awal H24 +500%
 
-# 🛡️ PINTU DOMINASI PEMBELI
+# 🛡️ PINTU DOMINASI PEMBELI (KETAT & ANTI-PISAU JATUH)
 MIN_BUYERS_H1 = 35                   # Wajib minimal 35 pembeli unik di H1
-MIN_BUY_SELL_RATIO_H1 = 1.30         # ⭐ Minimal Pembeli H1: 1.30x Penjual
-MIN_BUY_SELL_RATIO_M5 = 1.20         # ⭐ Minimal Pembeli M5: 1.20x Penjual
-MIN_AVG_TX_USD = 25.0                # Transaksi riil rata-rata >= $25 USD (Anti-wash bot)
+MIN_BUY_SELL_RATIO_H1 = 1.35         # ⭐ Pembeli H1 minimal 1.35x Penjual
+MIN_BUY_SELL_RATIO_M5 = 1.50         # ⭐ Pembeli M5 WAJIB >= 1.50x Penjual (Tolak Tekanan Jual!)
 
 # 🔒 KEAMANAN ON-CHAIN REAL-TIME
 MAX_DEV_HOLDING_PCT = 3.0            # Dev/Creator maksimal 3.0%
@@ -379,7 +378,15 @@ def evaluate_pair(pair: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     m5_buys = txns_m5.get("buys", 0)
     m5_sells = txns_m5.get("sells", 0)
 
-    if m5_buys < (m5_sells * MIN_BUY_SELL_RATIO_M5) or m5_buys < 5:
+    # 🛡️ PINTU ANTI-PISAU JATUH (M5):
+    # Tolak jika pembeli M5 tidak mencapai 1.50x penjual
+    if m5_buys < (m5_sells * MIN_BUY_SELL_RATIO_M5) or m5_buys < 8:
+        stats["sell_ratio_blocked"] += 1
+        return None
+
+    # Jika aksi jual di 5 menit terakhir melampaui 40% dari total order, LANGSUNG TOLAK!
+    total_tx_m5 = m5_buys + m5_sells
+    if total_tx_m5 > 0 and (m5_sells / total_tx_m5) > 0.40:
         stats["sell_ratio_blocked"] += 1
         return None
 
