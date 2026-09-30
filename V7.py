@@ -48,29 +48,30 @@ if TG_TOKEN:
         logger.error(f"Gagal inisialisasi telebot: {e}")
 
 # ============================================================================
-# ⚙️ KONFIGURASI PARAMETER KOMPREHENSIF (ADAPTIF & ANTI-TERLEWAT)
+# 👑 KONFIGURASI "50x RUNNER / BUY & HOLD" (ULTRA CONVICTION FILTER)
 # ============================================================================
-MIN_TOKEN_AGE_HOURS = 0.08          # Minimal usia ~5 menit (Tangkap sedini mungkin)
-MIN_LIQUIDITY_USD = 12000.0          # Minimal Likuiditas $12.000 USD
-MIN_MARKET_CAP = 25000.0             # ⭐ Min MC $25.000 USD (Early Capture)
-MAX_MARKET_CAP = 350000.0            # ⭐ Max MC diperluas hingga $2.5 Juta USD (Runner Alert)
-MIN_VOL_H1 = 8000.0                  # Min volume 1 jam $8,000 USD
+MIN_TOKEN_AGE_HOURS = 0.12          # Usia minimal ~7 menit (Lolos fase sniping bot)
+MIN_LIQUIDITY_USD = 18000.0         # Minimal Likuiditas $18.000 USD (Kolam tebal & aman ditinggal)
+MIN_MARKET_CAP = 35000.0            # ⭐ Min MC $35.000 USD (Dasar breakout sehat)
+MAX_MARKET_CAP = 180000.0           # ⭐ MAKSIMAL MC $180.000 USD! (Wajib beli di bawah agar ruang 50x terbuka!)
+MIN_VOL_H1 = 20000.0                # Volume 1 jam wajib deras minimal $20,000 USD
 
-# 🟢 TRIPLE GREEN LOCK ADAPTIF (HANYA KENAIKAN / TOLAK PENURUNAN)
-MIN_PC_M5 = 3.5                      # ⭐ M5 WAJIB HIJAU >= +3.5% (Tolak koin lesu/koreksi)
-MIN_PC_H1 = 12.0                     # ⭐ 1 Jam (H1) WAJIB HIJAU >= +12.0%
-MAX_PC_H1 = 250.0                    # Plafon H1 Max +250%
-MAX_PC_H24_INITIAL = 500.0           # Batas awal H24 +500%
+# 🟢 TRIPLE GREEN LOCK & RUNNER MOMENTUM
+MIN_PC_M5 = 3.0                     # Menit ini (M5) WAJIB HIJAU >= +3.0% (Tolak koin lesu/dump)
+MIN_PC_H1 = 15.0                    # 1 Jam (H1) WAJIB HIJAU >= +15.0%
+MAX_PC_H1 = 350.0                   # Plafon H1 Max +350%
+MAX_PC_H24_INITIAL = 800.0          # Batas awal H24 +800%
 
-# 🛡️ PINTU DOMINASI PEMBELI (KETAT & ANTI-PISAU JATUH)
-MIN_BUYERS_H1 = 35                   # Wajib minimal 35 pembeli unik di H1
-MIN_BUY_SELL_RATIO_H1 = 1.35         # ⭐ Pembeli H1 minimal 1.35x Penjual
-MIN_BUY_SELL_RATIO_M5 = 1.50         # ⭐ Pembeli M5 WAJIB >= 1.50x Penjual (Tolak Tekanan Jual!)
+# 🛡️ PINTU DOMINASI PEMBELI (MUTLAK ANTI-PISAU JATUH)
+MIN_BUYERS_H1 = 50                  # Wajib minimal 50 pembeli unik di H1 (Komunitas riil)
+MIN_BUY_SELL_RATIO_H1 = 1.75        # ⭐ Minimal Pembeli H1: 1.75x Penjual (Dominasi pembeli mutlak!)
+MIN_BUY_SELL_RATIO_M5 = 1.60        # ⭐ Minimal Pembeli M5: 1.60x Penjual (Tolak tekanan jual!)
+MIN_AVG_TX_USD = 25.0               # Transaksi riil rata-rata >= $25 USD (Anti-wash bot)
 
-# 🔒 KEAMANAN ON-CHAIN REAL-TIME
-MAX_DEV_HOLDING_PCT = 3.0            # Dev/Creator maksimal 3.0%
-MAX_SINGLE_HOLDER_PCT = 8.0          # 1 Dompet perorangan maksimal 8.0%
-MAX_TOP10_HOLDING_PCT = 30.0         # Total Top 10 Dompet maksimal 30.0% (Anti-False Alarm)
+# 🔒 KEAMANAN ON-CHAIN (STANDAR RUNNER KOMUNITAS)
+MAX_DEV_HOLDING_PCT = 1.8           # Dev maksimal 1.8% (Aman dari dev rug/dump)
+MAX_SINGLE_HOLDER_PCT = 5.5         # 1 Dompet perorangan maksimal 5.5%
+MAX_TOP10_HOLDING_PCT = 22.0        # Total Top 10 Dompet maksimal 22.0% (Distribusi merata)
 
 alerted_mints = set()
 stats = {
@@ -379,14 +380,14 @@ def evaluate_pair(pair: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     m5_sells = txns_m5.get("sells", 0)
 
     # 🛡️ PINTU ANTI-PISAU JATUH (M5):
-    # Tolak jika pembeli M5 tidak mencapai 1.50x penjual
+    # Tolak jika pembeli M5 tidak mencapai 1.60x penjual
     if m5_buys < (m5_sells * MIN_BUY_SELL_RATIO_M5) or m5_buys < 8:
         stats["sell_ratio_blocked"] += 1
         return None
 
-    # Jika aksi jual di 5 menit terakhir melampaui 40% dari total order, LANGSUNG TOLAK!
+    # Tolak jika aksi jual di 5 menit terakhir melampaui 38% dari total order!
     total_tx_m5 = m5_buys + m5_sells
-    if total_tx_m5 > 0 and (m5_sells / total_tx_m5) > 0.40:
+    if total_tx_m5 > 0 and (m5_sells / total_tx_m5) > 0.38:
         stats["sell_ratio_blocked"] += 1
         return None
 
@@ -395,18 +396,18 @@ def evaluate_pair(pair: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if avg_tx_usd < MIN_AVG_TX_USD:
         return None
 
-    # 5. AUDIT KEAMANAN ON-CHAIN
+    # 5. AUDIT MEDIA SOSIAL & KOMUNITAS (WAJIB ADA TWITTER ATAU TELEGRAM UNTUK RUNNER 50x)
+    social = extract_social_sentiment(pair)
+    if not social["has_socials"]:
+        # Koin tanpa Twitter / Telegram TIDAK BISA terbang 50x karena tidak ada komunitas
+        return None
+
+    # 6. AUDIT KEAMANAN ON-CHAIN
     security = audit_onchain_security(mint)
     if not security["is_safe"]:
         if "Top 10" in security["rejection_reason"]:
             stats["bundles_blocked"] += 1
         return None
-
-    # 6. AUDIT MEDIA SOSIAL
-    social = extract_social_sentiment(pair)
-
-    h1_ratio = round(h1_buys / max(1, h1_sells), 2)
-    m5_ratio = round(m5_buys / max(1, m5_sells), 2)
 
     if is_continuation:
         buyer_badge = f"🔥 <b>MEGA CONTINUATION RUNNER ({h1_ratio}x BUYERS)</b>"
@@ -430,12 +431,12 @@ def evaluate_pair(pair: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     final_score = min(100, base_score + social["score_bonus"])
 
-    # TRADING PLAN OTOMATIS
+    # 🎯 TARGET TRADING PLAN "50x RUNNER STRATEGY" (BUY & LEAVE 1 JAM)
     entry_mc = market_cap
-    tp1_mc = entry_mc * 1.5   # +50% Tarik Modal Awal
-    tp2_mc = entry_mc * 2.2   # +120% Ambil Profit
-    tp3_mc = entry_mc * 4.0   # +300% Moonshot
-    sl_mc = entry_mc * 0.78   # -22% Cut Loss
+    tp1_mc = entry_mc * 3.0    # 3x (+200%): TARIK SEMUA MODAL AWAL (POSISI FREE RIDE 100%)
+    tp2_mc = entry_mc * 10.0   # 10x (+900%): AMBIL 50% PROFIT (BANKING GAINS)
+    tp3_mc = entry_mc * 50.0   # 50x (+4,900%): RUNNER BAG HIT (PULUHAN RIBU PERSEN)
+    sl_mc = entry_mc * 0.75    # -25% Hard Stop Loss
 
     return {
         "mint": mint,
@@ -508,12 +509,12 @@ def format_telegram_message(d: Dict[str, Any]) -> str:
 
 {social_text}
 
-🎯 <b>REKOMENDASI TRADING PLAN (AUTO MC TARGET):</b>
+🎯 <b>TRADING PLAN "50x RUNNER" (BUY & HOLD 1 JAM):</b>
 🟢 <b>Entry Area:</b> ${d['entry_mc']:,.0f} MC
-🎯 <b>Target 1 (+50% Tarik Modal):</b> ${d['tp1_mc']:,.0f} MC
-🎯 <b>Target 2 (+120% Ambil Profit):</b> ${d['tp2_mc']:,.0f} MC
-🚀 <b>Moonshot (+300% Runner):</b> ${d['tp3_mc']:,.0f} MC
-🛑 <b>Stop Loss:</b> ${d['sl_mc']:,.0f} MC
+💰 <b>TP 1 (3x / +200%):</b> ${d['tp1_mc']:,.0f} MC <i>(Tarik Modal Awal -> Free Ride)</i>
+💎 <b>TP 2 (10x / +900%):</b> ${d['tp2_mc']:,.0f} MC <i>(Amankan 50% Keuntungan)</i>
+🚀 <b>TP 3 (50x RUNNER):</b> ${d['tp3_mc']:,.0f} MC <i>(Target Puluhan Ribu Persen)</i>
+🛑 <b>Proteksi SL (-25%):</b> ${d['sl_mc']:,.0f} MC
 
 📋 <b>Mint Address (Klik untuk Salin):</b>
 <code>{mint}</code>
