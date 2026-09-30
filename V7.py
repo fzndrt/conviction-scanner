@@ -398,9 +398,6 @@ def evaluate_pair(pair: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     # 5. AUDIT MEDIA SOSIAL & KOMUNITAS (WAJIB ADA TWITTER ATAU TELEGRAM UNTUK RUNNER 50x)
     social = extract_social_sentiment(pair)
-    if not social["has_socials"]:
-        # Koin tanpa Twitter / Telegram TIDAK BISA terbang 50x karena tidak ada komunitas
-        return None
 
     # 6. AUDIT KEAMANAN ON-CHAIN
     security = audit_onchain_security(mint)
@@ -478,11 +475,14 @@ def evaluate_pair(pair: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 def format_telegram_message(d: Dict[str, Any]) -> str:
     mint = d["mint"]
     soc = d["social"]
-    social_text = f"🌐 <b>Official Links:</b> {soc['summary']}"
-    if soc["twitter_url"]:
-        social_text += f"\n🐦 <b>Twitter/X:</b> {soc['twitter_url']}"
-    if soc["telegram_url"]:
-        social_text += f"\n✈️ <b>Telegram:</b> {soc['telegram_url']}"
+    if soc["has_socials"]:
+        social_text = f"🌐 <b>Official Links:</b> {soc['summary']}"
+        if soc["twitter_url"]:
+            social_text += f"\n🐦 <b>Twitter/X:</b> {soc['twitter_url']}"
+        if soc["telegram_url"]:
+            social_text += f"\n✈️ <b>Telegram:</b> {soc['telegram_url']}"
+    else:
+        social_text = "🌐 <b>Status Komunitas:</b> ⚡ <i>Stealth Early Stage (Medsos belum update di DexScreener)</i>"
 
     msg = f"""
 🚀 <b>SIGNAL BULLISH BREAKOUT TERVERIFIKASI</b>
