@@ -89,27 +89,26 @@ def get_json(url: str, timeout: int = 10) -> Optional[Any]:
 
 def audit_onchain_security(mint: str) -> Dict[str, Any]:
     """
-    🛡️ AUDIT ON-CHAIN REAL-TIME (RugCheck & Contract Authority):
-    - Cek Top 1 Holder & Cumulative Top 10 Holders
-    - Cek Saldo Dompet Dev / Creator
-    - Cek Status Freeze & Mint Authority (Anti-Honeypot)
-    - DILENGKAPI: Fallback Anti-Timeout 3.5 Detik agar bot tidak macet
+    🛡️ AUDIT ON-CHAIN REAL-TIME CERDAS:
+    1. Deteksi & Pisahkan Kolam Likuiditas DEX (AMM Pools: PumpSwap, Raydium, Meteora, Orca).
+    2. Audit Keamanan Kolam: Wajib Terkunci / Dibakar (LP Locked / Burned >= 85%).
+    3. Audit Dompet Manusia (Whale): Hitung hanya dompet perorangan asli!
+    4. Cek Freeze & Mint Authority (Anti-Honeypot).
     """
     res = {
         "top_holder": 0.0,
         "top10_cumulative": 0.0,
         "dev_holding": 0.0,
+        "lp_locked_pct": 0.0,
         "is_safe": True,
         "score": 0,
         "rejection_reason": "",
-        "audit_source": "RugCheck"
+        "audit_source": "RugCheck-SmartPool"
     }
     
     try:
-        # Timeout dipersingkat ke 3.5 detik agar loop bot tetap responsif
         data = get_json(f"https://api.rugcheck.xyz/v1/tokens/{mint}/report", timeout=4)
         
-        # 🟢 JIKA RUGCHECK MERESPON CEPAT & NORMAL:
         if data:
             score = data.get("score", 0)
             res["score"] = score
@@ -118,7 +117,7 @@ def audit_onchain_security(mint: str) -> Dict[str, Any]:
                 res["rejection_reason"] = f"RugCheck Score Bahaya: {score}"
                 return res
 
-            # Cek Freeze Authority & Mint Authority
+            # 1. Cek Freeze & Mint Authority
             token = data.get("token", {})
             if token.get("freezeAuthority") is not None:
                 res["is_safe"] = False
@@ -130,7 +129,7 @@ def audit_onchain_security(mint: str) -> Dict[str, Any]:
                 res["rejection_reason"] = "Mint Authority Aktif (Bisa Cetak Koin Gratis)!"
                 return res
 
-            # Cek Tag Risiko Bahaya dari RugCheck
+            # 2. Cek Risiko Sindikat / Insider
             risks = [rk.get("name", "").lower() for rk in data.get("risks", [])]
             for r_name in risks:
                 if "correlation" in r_name or "insider" in r_name:
@@ -138,6 +137,34 @@ def audit_onchain_security(mint: str) -> Dict[str, Any]:
                     res["rejection_reason"] = f"Risiko Sindikat: {r_name}"
                     return res
 
+            # 3. IDENTIFIKASI KOLAM DEX & AUDIT LP LOCKED/BURNED
+            markets = data.get("markets", [])
+            known_pool_addresses = set()
+            max_lp_locked = 0.0
+
+            for m in markets:
+                pub = m.get("pubkey")
+                if pub: 
+                    known_pool_addresses.add(pub)
+                lp = m.get("lp", {})
+                lp_mint = lp.get("lpMint")
+                if lp_mint: 
+                    known_pool_addresses.add(lp_mint)
+
+                # Cek persentase LP yang terkunci atau dibakar
+                locked = float(lp.get("lpLockedPct", 0) or 0)
+                if locked > max_lp_locked:
+                    max_lp_locked = locked
+
+            res["lp_locked_pct"] = max_lp_locked
+
+            # Syarat Wajib: Kolam Likuiditas harus terkunci minimal 85% (Anti Tarik Karpet / Rugpull)
+            if markets and max_lp_locked < 85.0:
+                res["is_safe"] = False
+                res["rejection_reason"] = f"Likuiditas Belum Terkunci! LP Lock: {max_lp_locked:.1f}% (< 85%)"
+                return res
+
+            # 4. FILTER DOMPET MANUSIA (MENGABAIKAN KOLAM DEX SECARA TOTAL)
             creator_addr = data.get("creator")
             top_holders = data.get("topHolders", [])
             cumulative_pct = 0.0
@@ -145,28 +172,36 @@ def audit_onchain_security(mint: str) -> Dict[str, Any]:
 
             for h in top_holders:
                 addr = h.get("address", "")
+                owner = h.get("owner", "")
                 pct = float(h.get("pct", 0.0))
-                is_pool = False
 
-                if "pool" in addr.lower() or "raydium" in addr.lower() or "meteora" in addr.lower():
-                    is_pool = True
+                # Kriteria Deteksi Kolam DEX:
+                # - Alamat atau Owner cocok dengan pubkey market DEX (Raydium, PumpSwap, Meteora, dll)
+                # - Atau mengandung teks AMM standar
+                is_dex_pool = (
+                    addr in known_pool_addresses or 
+                    owner in known_pool_addresses or
+                    "pool" in addr.lower() or 
+                    "raydium" in addr.lower() or 
+                    "meteora" in addr.lower() or
+                    "pump" in addr.lower()
+                )
 
-                if addr == creator_addr and pct > 0:
-                    res["dev_holding"] = pct
+                if addr == creator_addr or owner == creator_addr:
+                    if not is_dex_pool:
+                        res["dev_holding"] = pct
 
-                if not is_pool and pct < 90.0:
+                # HANYA HITUNG JIKA INI DOMPET MANUSIA (BUKAN KOLAM LIKUIDITAS)
+                if not is_dex_pool:
                     if pct > res["top_holder"]:
                         res["top_holder"] = pct
                     if counted_holders < 10:
                         cumulative_pct += pct
                         counted_holders += 1
-                elif not is_pool and pct >= 90.0:
-                    res["is_safe"] = False
-                    res["rejection_reason"] = f"Dev/Whale memegang {pct:.1f}% suplai!"
-                    return res
 
             res["top10_cumulative"] = round(cumulative_pct, 1)
 
+            # 5. EVALUASI AMAN UNTUK DOMPET MANUSIA
             if res["dev_holding"] > MAX_DEV_HOLDING_PCT:
                 res["is_safe"] = False
                 res["rejection_reason"] = f"Dev memegang {res['dev_holding']:.1f}% suplai"
@@ -174,7 +209,7 @@ def audit_onchain_security(mint: str) -> Dict[str, Any]:
 
             if res["top_holder"] > MAX_SINGLE_HOLDER_PCT:
                 res["is_safe"] = False
-                res["rejection_reason"] = f"Top 1 Holder {res['top_holder']:.1f}% > {MAX_SINGLE_HOLDER_PCT}%"
+                res["rejection_reason"] = f"Top 1 Paus Manusia {res['top_holder']:.1f}% > {MAX_SINGLE_HOLDER_PCT}%"
                 return res
 
             if res["top10_cumulative"] > MAX_TOP10_HOLDING_PCT:
@@ -184,15 +219,14 @@ def audit_onchain_security(mint: str) -> Dict[str, Any]:
 
             return res
 
-        # 🔴 JIKA RUGCHECK TIMEOUT / GAGAL:
-        # Tolak koin demi keamanan modal (Jangan beli kucing dalam karung!)
+        # Jika Rugcheck timeout / gagal
         res["is_safe"] = False
         res["rejection_reason"] = "Audit On-Chain Timeout / Server Sibuk"
         return res
 
-    except Exception:
-        # Jika ada error jaringan mendadak, amankan bot agar tidak crash
-        res["audit_source"] = "Fallback-Safe"
+    except Exception as e:
+        res["is_safe"] = False
+        res["rejection_reason"] = f"Audit Error: {e}"
         return res
 
 def extract_social_sentiment(pair: Dict[str, Any]) -> Dict[str, Any]:
