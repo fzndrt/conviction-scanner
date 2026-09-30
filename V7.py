@@ -62,8 +62,8 @@ MIN_AVG_TX_USD = 35.0                # Transaksi riil rata-rata >= $35 USD (Anti
 
 # 🔒 KEAMANAN ON-CHAIN & ANTI-SYNDICATE
 MAX_DEV_HOLDING_PCT = 2.5            # Dev/Creator maksimal 2.5%
-MAX_SINGLE_HOLDER_PCT = 10.0         # 1 Dompet perorangan maksimal 10.0%
-MAX_TOP10_HOLDING_PCT = 28.0         # Total Top 10 Dompet maksimal 28.0% (Anti-Bundle)
+MAX_SINGLE_HOLDER_PCT = 7.5         # 1 Dompet perorangan maksimal 10.0%
+MAX_TOP10_HOLDING_PCT = 24.0         # Total Top 10 Dompet maksimal 28.0% (Anti-Bundle)
 
 alerted_mints = set()
 stats = {
@@ -130,6 +130,14 @@ def audit_onchain_security(mint: str) -> Dict[str, Any]:
                 res["rejection_reason"] = "Mint Authority Aktif (Bisa Cetak Koin Gratis)!"
                 return res
 
+            # Cek Tag Risiko Bahaya dari RugCheck
+            risks = [rk.get("name", "").lower() for rk in data.get("risks", [])]
+            for r_name in risks:
+                if "correlation" in r_name or "insider" in r_name:
+                    res["is_safe"] = False
+                    res["rejection_reason"] = f"Risiko Sindikat: {r_name}"
+                    return res
+
             creator_addr = data.get("creator")
             top_holders = data.get("topHolders", [])
             cumulative_pct = 0.0
@@ -176,11 +184,10 @@ def audit_onchain_security(mint: str) -> Dict[str, Any]:
 
             return res
 
-        # 🟡 JIKA RUGCHECK TIMEOUT / GAGAL (SMART FALLBACK):
-        # Koin tetap diloloskan dengan catatan aman sementara agar momentum roket tidak terlewat!
-        res["audit_source"] = "Bypass-Timeout (Lolos Syarat Likuiditas)"
-        res["top_holder"] = 4.5
-        res["top10_cumulative"] = 18.0
+        # 🔴 JIKA RUGCHECK TIMEOUT / GAGAL:
+        # Tolak koin demi keamanan modal (Jangan beli kucing dalam karung!)
+        res["is_safe"] = False
+        res["rejection_reason"] = "Audit On-Chain Timeout / Server Sibuk"
         return res
 
     except Exception:
