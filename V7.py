@@ -584,10 +584,31 @@ if app:
         return jsonify({"status": "error", "message": "Bot token / chat ID belum dikonfigurasi"}), 400
 
 
-if __name__ == "__main__":
+def start_bot_and_background_worker():
+    if bot and TG_CHAT_ID:
+        try:
+            bot.send_message(
+                TG_CHAT_ID,
+                "👑 <b>SOLANA CONVICTION SCANNER v7.0 ONLINE DI RENDER!</b>\n"
+                "• Radar Multi-Feed: Aktif (PumpSwap, Raydium, Meteora)\n"
+                "• Triple Green Lock: Aktif (Hanya Deteksi Naik)\n"
+                "• Strict Buy Ratio: >= 1.50x\n"
+                "• Smart DEX Pool Exclusion: Aktif (Top 1 Whale Murni Manusia)\n"
+                "<i>Scanner siap menjaring permata breakout...</i>",
+                parse_mode="HTML"
+            )
+            logger.info("Startup message sent successfully to Telegram!")
+        except Exception as e:
+            logger.error(f"Gagal kirim pesan startup: {e}")
+
     t = threading.Thread(target=run_breakout_scanner_loop, daemon=True)
     t.start()
-    
+    logger.info("Background scanner thread started successfully!")
+
+# Dijalankan otomatis saat di-import oleh Gunicorn di Render!
+start_bot_and_background_worker()
+
+if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     if app:
         app.run(host="0.0.0.0", port=port)
