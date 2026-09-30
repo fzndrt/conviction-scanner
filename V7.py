@@ -409,6 +409,10 @@ def evaluate_pair(pair: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             stats["bundles_blocked"] += 1
         return None
 
+    # 💡 HITUNG RASIO PEMBELI (AGAR TIDAK ERROR)
+    h1_ratio = round(h1_buys / max(1, h1_sells), 2)
+    m5_ratio = round(m5_buys / max(1, m5_sells), 2)
+
     if is_continuation:
         buyer_badge = f"🔥 <b>MEGA CONTINUATION RUNNER ({h1_ratio}x BUYERS)</b>"
         buyer_desc = "Koin breakout kuat & terus mencetak Higher High! Gelombang reli aktif!"
