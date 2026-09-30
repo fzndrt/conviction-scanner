@@ -53,7 +53,7 @@ if TG_TOKEN:
 MIN_TOKEN_AGE_HOURS = 0.08          # Minimal usia ~5 menit (Tangkap sedini mungkin)
 MIN_LIQUIDITY_USD = 12000.0          # Minimal Likuiditas $12.000 USD
 MIN_MARKET_CAP = 25000.0             # ⭐ Min MC $25.000 USD (Early Capture)
-MAX_MARKET_CAP = 2500000.0           # ⭐ Max MC diperluas hingga $2.5 Juta USD (Runner Alert)
+MAX_MARKET_CAP = 350000.0            # ⭐ Max MC diperluas hingga $2.5 Juta USD (Runner Alert)
 MIN_VOL_H1 = 8000.0                  # Min volume 1 jam $8,000 USD
 
 # 🟢 TRIPLE GREEN LOCK ADAPTIF (HANYA KENAIKAN / TOLAK PENURUNAN)
