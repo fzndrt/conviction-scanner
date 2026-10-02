@@ -661,7 +661,7 @@ if __name__ == "__main__":
             startup_msg = (
                 "🛡️ <b>PUMPALPHA BOT v4.0 CONVICTION ONLINE!</b>\n"
                 "• 🟡 Pump.fun Radar (Bonding 25-80%)\n"
-                "• 🔵 Dex Early Gem (MC < $350k)\n"
+                "• 🔵 Dex Early Gem (MC di bawah $350k)\n"
                 "• 🔵 Conviction Runner Rally (MC $350k - $8M)\n"
                 "• 📦 SQLite Database Persisten Aktif\n"
                 "• 🚫 Anti-Cabal Slow-Bleed & Bot Trap Aktif"
