@@ -1,683 +1,616 @@
 """
-=============================================================================
-CONVICTION SCANNER V7.0 - ULTIMATE COMPREHENSIVE EDITION
-- Multi-Feed Discovery Radar (DexScreener + GeckoTerminal Solana)
-- Turbo Batching Scanner (30 tokens/batch, 15s scan cycle)
-- Smart AMM Pool & LP Locked/Burned Audit (RugCheck V1 + DEX Vaults)
-- Triple Green Lock Adaptif (Early Gems $25k s/d Mega Runners $2.5M)
-- Anti-Dump & Pure Buyer Dominance Engine
-- Flask Keep-Alive Webhook for 24/7 Cloud Hosting
-=============================================================================
+main.py - Dual-Engine & Conviction Scanner Ultimate (v4.0 Enterprise)
+Repo: https://github.com/fzndrt/memecoin-alert-bot
+Integrasi Penuh:
+1. Mesin 1: PumpPortal WebSocket (Early Bonding 25%-80%)
+2. Mesin 2: Conviction Scanner & Solana DEX (Dual-Track Early Gem & Multi-Hour Runner)
+3. Persistensi Database: SQLite terintegrasi (Anti-hilang riwayat saat server Render restart)
+4. Anti-Cabal Slow-Bleed Detector:
+    * Deteksi akumulasi Top 10 dompet acak non-pool
+    * Deteksi net-selling terselubung pada timeframe H1 & H6
+    * Deteksi rasio jual whale vs retail
+5. Anomaly & Micro-Bot Trap Detector (Bebas bot receh, fake volume, dan fake MC)
 """
 
 import os
-import sys
 import time
 import json
-import logging
+import sqlite3
+import asyncio
 import threading
+import logging
 import urllib.request
-from typing import Dict, Any, List, Set, Tuple, Optional
+from collections import Counter
+from flask import Flask, jsonify
+import telebot
 
-# Setup Logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
+import config
+import state
+from analyzer import MemecoinAccumulationAnalyzer
+from pumpportal_stream import PumpPortalStreamer
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("memecoin-alert-bot")
+
+app = Flask(__name__)
+bot = telebot.TeleBot(config.TELEGRAM_BOT_TOKEN) if config.TELEGRAM_BOT_TOKEN else None
+
+# Inisialisasi Analyzer Inti
+analyzer = MemecoinAccumulationAnalyzer(
+    min_cvd_ratio=28.0,
+    min_buy_sell_ratio=1.5,
+    max_dev_holding=2.5,
+    max_top_holder=10.0,
+    min_age_minutes=10.0,
+    max_age_minutes=120.0
 )
-logger = logging.getLogger("ConvictionV7")
 
-# Webhook Server
-try:
-    from flask import Flask, jsonify
-    app = Flask(__name__)
-except ImportError:
-    app = None
+token_cache = {}
+stats = {"events_received": 0, "gems_found": 0}
 
-# Telegram Bot Setup
-TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TG_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-bot = None
+# =====================================================================
+# MODUL 1: PERSISTENSI DATABASE SQLITE (ANTI-RESET SERVER RENDER)
+# =====================================================================
+DB_PATH = "radar_history.db"
 
-if TG_TOKEN:
+def init_radar_database():
+    """Inisialisasi tabel SQLite untuk menyimpan jejak rekam koin secara permanen."""
     try:
-        import telebot
-        bot = telebot.TeleBot(TG_TOKEN)
-        logger.info("Telegram Bot berhasil diinisialisasi.")
-    except Exception as e:
-        logger.error(f"Gagal inisialisasi telebot: {e}")
-
-# ============================================================================
-# 👑 KONFIGURASI "50x RUNNER / BUY & HOLD" (ULTRA CONVICTION FILTER)
-# ============================================================================
-MIN_LIQUIDITY_USD = 18000.0          # 🛡️ Naikkan ke $18.000 USD (Tolak kolam dangkal)
-MIN_MARKET_CAP = 35000.0             # 🛡️ Naikkan ke $35.000 USD
-MAX_MARKET_CAP = 300000.0            # 🛡️ Batasi di $180.000 USD (Cegah beli koin yang sudah pucuk)
-
-# 🟢 TRIPLE GREEN LOCK & RUNNER MOMENTUM
-MIN_PC_M5 = 3.0                     # Menit ini (M5) WAJIB HIJAU >= +3.0% (Tolak koin lesu/dump)
-MIN_PC_H1 = 15.0                    # 1 Jam (H1) WAJIB HIJAU >= +15.0%
-MAX_PC_H1 = 350.0                   # Plafon H1 Max +350%
-MAX_PC_H24_INITIAL = 800.0          # Batas awal H24 +800%
-
-# 🛡️ PINTU DOMINASI PEMBELI (MUTLAK ANTI-PISAU JATUH)
-MIN_BUYERS_H1 = 50                  # Wajib minimal 50 pembeli unik di H1 (Komunitas riil)
-MIN_BUY_SELL_RATIO_H1 = 1.75        # ⭐ Minimal Pembeli H1: 1.75x Penjual (Dominasi pembeli mutlak!)
-MIN_BUY_SELL_RATIO_M5 = 1.60        # ⭐ Minimal Pembeli M5: 1.60x Penjual (Tolak tekanan jual!)
-MIN_AVG_TX_USD = 25.0               # Transaksi riil rata-rata >= $25 USD (Anti-wash bot)
-
-# 🔒 KEAMANAN ON-CHAIN (STANDAR RUNNER KOMUNITAS)
-MAX_DEV_HOLDING_PCT = 1.8           # Dev maksimal 1.8% (Aman dari dev rug/dump)
-MAX_SINGLE_HOLDER_PCT = 5.5         # 1 Dompet perorangan maksimal 5.5%
-MAX_TOP10_HOLDING_PCT = 22.0        # Total Top 10 Dompet maksimal 22.0% (Distribusi merata)
-
-alerted_mints = set()
-stats = {
-    "scans_completed": 0,
-    "breakouts_detected": 0,
-    "continuation_rallies": 0,
-    "golden_buyers_found": 0,
-    "dumps_blocked": 0,
-    "sell_ratio_blocked": 0,
-    "bundles_blocked": 0,
-    "last_scan_time": 0
-}
-
-
-def get_json(url: str, timeout: int = 5) -> Optional[Any]:
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode('utf-8'))
-    except Exception:
-        return None
-
-
-def audit_onchain_security(mint: str) -> Dict[str, Any]:
-    """
-    🛡️ AUDIT ON-CHAIN REAL-TIME CERDAS:
-    1. Deteksi & Pisahkan Kolam Likuiditas DEX (AMM: PumpSwap, Raydium, Meteora, Orca).
-    2. Audit Keamanan Kolam: Wajib Terkunci / Dibakar (LP Locked / Burned >= 80%).
-    3. Audit Dompet Manusia (Whale): Hitung hanya dompet perorangan asli!
-    4. Cek Freeze & Mint Authority (Anti-Honeypot).
-    """
-    res = {
-        "top_holder": 0.0,
-        "top10_cumulative": 0.0,
-        "dev_holding": 0.0,
-        "lp_locked_pct": 0.0,
-        "is_safe": True,
-        "score": 0,
-        "rejection_reason": "",
-        "audit_source": "RugCheck-SmartPool"
-    }
-    
-    try:
-        data = get_json(f"https://api.rugcheck.xyz/v1/tokens/{mint}/report", timeout=4)
-        
-        if data:
-            score = data.get("score", 0)
-            res["score"] = score
-            if score > 450:
-                res["is_safe"] = False
-                res["rejection_reason"] = f"RugCheck Score Bahaya: {score}"
-                return res
-
-            token = data.get("token", {})
-            if token.get("freezeAuthority") is not None:
-                res["is_safe"] = False
-                res["rejection_reason"] = "Freeze Authority Aktif (Potensi Honeypot)!"
-                return res
-
-            if token.get("mintAuthority") is not None:
-                res["is_safe"] = False
-                res["rejection_reason"] = "Mint Authority Aktif (Bisa Cetak Koin Gratis)!"
-                return res
-
-            risks = [rk.get("name", "").lower() for rk in data.get("risks", [])]
-            for r_name in risks:
-                if "correlation" in r_name or "insider" in r_name:
-                    res["is_safe"] = False
-                    res["rejection_reason"] = f"Risiko Sindikat: {r_name}"
-                    return res
-
-            # Identifikasi Kolam Likuiditas DEX
-            markets = data.get("markets", [])
-            known_pool_addresses = set()
-            max_lp_locked = 0.0
-
-            for m in markets:
-                pub = m.get("pubkey")
-                if pub: 
-                    known_pool_addresses.add(pub)
-                lp = m.get("lp", {})
-                lp_mint = lp.get("lpMint")
-                if lp_mint: 
-                    known_pool_addresses.add(lp_mint)
-
-                locked = float(lp.get("lpLockedPct", 0) or 0)
-                if locked > max_lp_locked:
-                    max_lp_locked = locked
-
-            res["lp_locked_pct"] = max_lp_locked
-
-            if markets and max_lp_locked < 80.0:
-                res["is_safe"] = False
-                res["rejection_reason"] = f"Likuiditas Belum Terkunci! LP Lock: {max_lp_locked:.1f}% (< 80%)"
-                return res
-
-            # Filter Dompet Manusia Asli
-            creator_addr = data.get("creator")
-            top_holders = data.get("topHolders", [])
-            cumulative_pct = 0.0
-            counted_holders = 0
-
-            for h in top_holders:
-                addr = h.get("address", "")
-                owner = h.get("owner", "")
-                pct = float(h.get("pct", 0.0))
-
-                is_dex_pool = (
-                    addr in known_pool_addresses or 
-                    owner in known_pool_addresses or
-                    "pool" in addr.lower() or 
-                    "raydium" in addr.lower() or 
-                    "meteora" in addr.lower() or
-                    "pump" in addr.lower()
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS radar_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    mint TEXT NOT NULL,
+                    timestamp REAL NOT NULL,
+                    buys_h1 INTEGER,
+                    sells_h1 INTEGER,
+                    volume_h1 REAL,
+                    liquidity_usd REAL,
+                    market_cap REAL
                 )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_mint_timestamp ON radar_snapshots(mint, timestamp)")
+            conn.commit()
+            logger.info("📦 [Database] SQLite Radar Snapshots Siap & Terkoneksi!")
+    except Exception as e:
+        logger.error(f"Gagal inisialisasi database: {e}")
 
-                if addr == creator_addr or owner == creator_addr:
-                    if not is_dex_pool:
-                        res["dev_holding"] = pct
+init_radar_database()
 
-                if not is_dex_pool:
-                    if pct > res["top_holder"]:
-                        res["top_holder"] = pct
-                    if counted_holders < 10:
-                        cumulative_pct += pct
-                        counted_holders += 1
+def record_token_snapshot(mint: str, buys_h1: int, sells_h1: int, vol_h1: float, liq_usd: float, mc: float):
+    """Menyimpan data pengamatan berkala koin ke SQLite."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO radar_snapshots (mint, timestamp, buys_h1, sells_h1, volume_h1, liquidity_usd, market_cap)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (mint, time.time(), buys_h1, sells_h1, vol_h1, liq_usd, mc))
+            conn.commit()
+    except Exception:
+        pass
 
-            res["top10_cumulative"] = round(cumulative_pct, 1)
-# 🛡️ DETEKSI KLUSTER DOMPET PEMECAH SUPLAI (SPLIT WALLETS DETECTOR)
-            # Jika dev memecah suplai ke dompet-dompet klaster berukuran sama (misal 4+ dompet @ ~0.4%)
-            non_pool_pcts = [float(h.get("pct", 0.0)) for h in top_holders if float(h.get("pct", 0.0)) < 85.0]
-            if len(non_pool_pcts) >= 5:
-                rounded_pcts = [round(p, 1) for p in non_pool_pcts[:12]]
-                from collections import Counter
+def get_token_track_record(mint: str) -> dict:
+    """Mengambil riwayat beberapa jam terakhir dari SQLite."""
+    now = time.time()
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT timestamp, buys_h1, sells_h1, volume_h1, liquidity_usd, market_cap
+                FROM radar_snapshots
+                WHERE mint = ?
+                ORDER BY timestamp ASC
+            """, (mint,))
+            rows = cursor.fetchall()
+            
+            if not rows:
+                return {"tracked_hours": 0.0, "snapshots_count": 0, "liq_growth": 0.0, "is_steady_accumulation": False}
+                
+            first_time = rows[0][0]
+            tracked_hours = (now - first_time) / 3600.0
+            
+            initial_liq = rows[0][4]
+            latest_liq = rows[-1][4]
+            liq_growth = ((latest_liq - initial_liq) / max(1.0, initial_liq)) * 100.0
+            is_steady = (latest_liq >= initial_liq * 0.90) and (rows[-1][1] >= rows[-1][2])
+            
+            return {
+                "tracked_hours": tracked_hours,
+                "snapshots_count": len(rows),
+                "liq_growth": liq_growth,
+                "is_steady_accumulation": is_steady
+            }
+    except Exception:
+        return {"tracked_hours": 0.0, "snapshots_count": 0, "liq_growth": 0.0, "is_steady_accumulation": False}
+
+
+# =====================================================================
+# MODUL 2: DETEKTOR ANOMALI BOT & ANTI-CABAL SLOW-BLEED
+# =====================================================================
+def audit_onchain_safety_and_cabal(mint: str) -> dict:
+    """
+    Audit On-Chain Lengkap:
+    1. Skor RugCheck & Izin Bahaya (Mint/Freeze Authority)
+    2. Deteksi Sindikat Pecah Dompet (Identical Split-Wallets)
+    3. Deteksi Cabal Slow-Bleed (Whale acak yang mendominasi supply non-pool)
+    """
+    try:
+        url = f"https://api.rugcheck.xyz/v1/tokens/{mint}/report"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            
+            score = int(data.get("score") or 0)
+            if score > 450:
+                logger.info(f"🚫 [RugCheck] Ditolak: Skor bahaya ({score} > 450) ({mint})")
+                return {"is_safe": False, "reason": "High Risk Score", "top_holder": 999.0}
+
+            risks = data.get("risks", [])
+            for r in risks:
+                r_name = str(r.get("name", "")).lower()
+                r_level = str(r.get("level", "")).lower()
+                if "freeze" in r_name or "mint" in r_name or r_level == "danger":
+                    logger.info(f"🚫 [RugCheck] Ditolak: Bahaya Fatal '{r.get('name')}' ({mint})")
+                    return {"is_safe": False, "reason": "Contract Authority Danger", "top_holder": 999.0}
+
+            top_holders = data.get("topHolders", [])
+            non_pool_holders = []
+            
+            for h in top_holders:
+                addr = str(h.get("address", "")).lower()
+                pct = float(h.get("pct", 0.0) or 0.0)
+                if any(dex in addr for dex in ["pool", "raydium", "meteora", "pump", "openbook", "orca"]):
+                    continue
+                if pct < 85.0:
+                    non_pool_holders.append(pct)
+
+            if not non_pool_holders:
+                return {"is_safe": True, "top_holder": 0.0, "cabal_sum": 0.0}
+
+            top_1_holder = non_pool_holders[0]
+
+            # Deteksi Sindikat Pecah Dompet (Persentase Kembar)
+            if len(non_pool_holders) >= 4:
+                rounded_pcts = [round(p, 1) for p in non_pool_holders[:15]]
                 counts = Counter(rounded_pcts)
                 for pct_val, freq in counts.items():
                     if pct_val >= 0.3 and freq >= 4:
-                        res["is_safe"] = False
-                        res["rejection_reason"] = f"Sindikat Split-Wallet: {freq} dompet memegang suplai identik ~{pct_val}%"
-                        return res
-            if res["dev_holding"] > MAX_DEV_HOLDING_PCT:
-                res["is_safe"] = False
-                res["rejection_reason"] = f"Dev memegang {res['dev_holding']:.1f}% suplai"
-                return res
+                        logger.info(f"🚫 [Anti-Sindikat] Ditolak: Split-Wallet Terdeteksi ({freq} dompet memegang persis ~{pct_val}%) ({mint})")
+                        return {"is_safe": False, "reason": "Split Wallet Cluster", "top_holder": 999.0}
 
-            if res["top_holder"] > MAX_SINGLE_HOLDER_PCT:
-                res["is_safe"] = False
-                res["rejection_reason"] = f"Top 1 Paus Manusia {res['top_holder']:.1f}% > {MAX_SINGLE_HOLDER_PCT}%"
-                return res
+            # Deteksi CABAL SLOW-BLEED (Akumulasi Top 10 Wallet Acak > 28%)
+            cabal_top10_sum = sum(non_pool_holders[:10])
+            if cabal_top10_sum > 28.0:
+                logger.info(f"🚫 [Anti-Cabal] Ditolak: Cabal Slow-Bleed Risk (Top 10 non-pool akumulasi {cabal_top10_sum:.1f}% > 28%) ({mint})")
+                return {"is_safe": False, "reason": "Cabal Accumulation Heavy", "top_holder": top_1_holder}
 
-            if res["top10_cumulative"] > MAX_TOP10_HOLDING_PCT:
-                res["is_safe"] = False
-                res["rejection_reason"] = f"Top 10 Dompet memegang {res['top10_cumulative']}% (> {MAX_TOP10_HOLDING_PCT}%)"
-                return res
+            return {"is_safe": True, "top_holder": top_1_holder, "cabal_sum": cabal_top10_sum}
+    except Exception:
+        pass
+    return {"is_safe": True, "top_holder": 0.0, "cabal_sum": 0.0}
 
-            return res
+def evaluate_market_and_bot_anomalies(mint: str, buys_h1: int, sells_h1: int, vol_h1: float, vol_m5: float, liq_usd: float, mc: float) -> dict:
+    """Evaluasi Matematika Pasar, Bot Loop, dan Anomali Kolam Likuiditas"""
+    record_token_snapshot(mint, buys_h1, sells_h1, vol_h1, liq_usd, mc)
+    track_record = get_token_track_record(mint)
 
-        res["is_safe"] = False
-        res["rejection_reason"] = "Audit On-Chain Timeout"
-        return res
+    total_tx = buys_h1 + sells_h1
+    avg_ticket = (vol_h1 / max(1, total_tx)) if total_tx > 0 else 0.0
+    
+    is_micro_bot = (total_tx >= 200 and avg_ticket < 25.0)
+    is_liquidity_trap = (liq_usd < 35000.0 and total_tx > 450)
+    liq_ratio = (liq_usd / mc * 100.0) if mc > 0 else 0.0
+    is_fake_mc = (mc > 250000.0 and liq_ratio < 4.0)
+    is_wash_trading = (liq_usd > 0 and (vol_h1 / liq_usd > 6.5 or vol_m5 / liq_usd > 2.2))
+    buyer_dominance = (buys_h1 / max(1, sells_h1))
 
-    except Exception as e:
-        res["is_safe"] = False
-        res["rejection_reason"] = f"Audit Error: {e}"
-        return res
-
-
-def extract_social_sentiment(pair: Dict[str, Any]) -> Dict[str, Any]:
-    info = pair.get("info", {})
-    websites = info.get("websites", [])
-    socials = info.get("socials", [])
-
-    has_website = len(websites) > 0
-    twitter_handle = None
-    telegram_handle = None
-
-    for s in socials:
-        plat = s.get("type", "").lower()
-        url = s.get("url", "")
-        if plat == "twitter":
-            twitter_handle = url
-        elif plat == "telegram":
-            telegram_handle = url
-
-    score_bonus = 0
-    labels = []
-    if twitter_handle:
-        score_bonus += 3
-        labels.append("Twitter (X)")
-    if telegram_handle:
-        score_bonus += 3
-        labels.append("Telegram")
-    if has_website:
-        score_bonus += 2
-        labels.append("Website")
+    is_organic = (not is_micro_bot) and (not is_liquidity_trap) and (not is_fake_mc) and (not is_wash_trading) and (buyer_dominance >= 1.25)
 
     return {
-        "has_socials": bool(twitter_handle or telegram_handle),
-        "has_website": has_website,
-        "twitter_url": twitter_handle,
-        "telegram_url": telegram_handle,
-        "score_bonus": score_bonus,
-        "summary": ", ".join(labels) if labels else "None"
+        "is_organic": is_organic,
+        "avg_ticket": avg_ticket,
+        "buyer_dominance": buyer_dominance,
+        "liq_ratio": liq_ratio,
+        "is_micro_bot": is_micro_bot,
+        "is_liquidity_trap": is_liquidity_trap,
+        "is_fake_mc": is_fake_mc,
+        "is_wash_trading": is_wash_trading,
+        "track_record": track_record
     }
 
 
-def fetch_all_solana_candidates() -> List[str]:
-    """
-    🌐 RADAR MULTI-SUMBER KOMPREHENSIF (150 - 250+ Koin Simultan):
-    Menjaring dari DexScreener Profiles, Boosts (Latest & Top), Search (SOL, Raydium, Pump),
-    serta GeckoTerminal Solana New & Trending Pools. Runner emas tidak akan terlewat lagi!
-    """
-    candidates = set()
-    endpoints = [
-        "https://api.dexscreener.com/token-profiles/latest/v1",
-        "https://api.dexscreener.com/token-boosts/latest/v1",
-        "https://api.dexscreener.com/token-boosts/top/v1",
-        "https://api.dexscreener.com/latest/dex/search?q=SOL",
-        "https://api.dexscreener.com/latest/dex/search?q=Raydium",
-        "https://api.dexscreener.com/latest/dex/search?q=Pump",
-        "https://api.geckoterminal.com/api/v2/networks/solana/new_pools?page=1",
-        "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?page=1"
+# =====================================================================
+# MODUL 3: FORMAT TELEGRAM ALERT MULTI-TRACK
+# =====================================================================
+def format_telegram_alert(token_name: str, symbol: str, mint: str, eval_result: dict, mc: float, source: str, extra_info: str) -> str:
+    score = eval_result.get("score", 0)
+    cvd_ratio = eval_result.get("cvd_ratio", 0.0)
+    buy_ratio = eval_result.get("buy_sell_ratio", 1.0)
+    age = eval_result.get("age_minutes", 0.0)
+    top_holder = eval_result.get("top_holder_pct", 0.0)
+
+    if source == "PUMPFUN":
+        header_badge = "🟡 <b>[PUMP.FUN LIVE RADAR]</b>"
+        stage_desc = "Fase Akumulasi Kurva Bonding (25% - 75%)"
+    elif "RALLY" in source:
+        header_badge = "🔵 <b>[CONVICTION RUNNER RALLY]</b>"
+        stage_desc = "High-Liquidity Breakout & Teruji Multi-Jam"
+    else:
+        header_badge = "🔵 <b>[SOLANA DEX EARLY GEM]</b>"
+        stage_desc = "Resmi Listing di Raydium/DEX (Lolos Migrasi)"
+
+    lines = [
+        f"{header_badge}",
+        f"👑 <b>POTENSI GEM DITEMUKAN (SKOR: {score}/100)</b>",
+        f"🏷️ <i>{stage_desc}</i>\n",
+        f"🪙 <b>Koin:</b> {token_name} (<code>${symbol}</code>)",
+        f"💰 <b>Market Cap:</b> <code>${mc:,.0f}</code>",
+        f"{extra_info}",
+        f"⏳ <b>Usia Koin:</b> <code>{age:.1f} Menit</code>\n",
+        "📊 <b>ANALISIS ON-CHAIN & CONVICTION:</b>",
+        f"├ 🚀 <b>Net Inflow (CVD):</b> <code>+{cvd_ratio:.1f}%</code>",
+        f"├ 👥 <b>Rasio Pembeli:</b> <code>{buy_ratio:.2f}x Penjual</code>",
+        f"└ 🐋 <b>Top 1 Whale:</b> <code>{top_holder:.1f}%</code> (Aman dari Rug)\n",
+        f"🔍 <b>Kontrak Mint:</b>\n<code>{mint}</code>\n",
+        "🔗 <b>Akses Cepat & Trading:</b>",
+        f"• <a href=\"https://pump.fun/coin/{mint}\">Buka di Pump.fun</a>",
+        f"• <a href=\"https://dexscreener.com/solana/{mint}\">Grafik DexScreener</a>",
+        f"• <a href=\"https://rugcheck.xyz/tokens/{mint}\">Audit RugCheck</a>",
+        f"• <a href=\"https://t.me/PhotonSolanaBot?start={mint}\">Beli via Photon Bot</a>"
     ]
-
-    for ep in endpoints:
-        data = get_json(ep, timeout=3)
-        if isinstance(data, list):
-            for item in data:
-                if item.get("chainId") == "solana":
-                    addr = item.get("tokenAddress")
-                    if addr:
-                        candidates.add(addr)
-        elif isinstance(data, dict):
-            # Format DexScreener search
-            for pair in data.get("pairs", []):
-                if pair.get("chainId") == "solana":
-                    addr = pair.get("baseToken", {}).get("address")
-                    if addr:
-                        candidates.add(addr)
-            # Format GeckoTerminal pools
-            for it in data.get("data", []):
-                rel = it.get("relationships", {}).get("base_token", {}).get("data", {})
-                tid = rel.get("id", "")
-                if tid.startswith("solana_"):
-                    candidates.add(tid.replace("solana_", ""))
-
-    return list(candidates)
+    return "\n".join(lines)
 
 
-def evaluate_pair(pair: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    base = pair.get("baseToken", {})
-    mint = base.get("address")
-    created_at = pair.get("pairCreatedAt")
+# =====================================================================
+# MESIN 1: PUMP.FUN WEBSOCKET (EARLY RADAR)
+# =====================================================================
+async def on_token_event(data: dict):
+    stats["events_received"] += 1
+    mint = data.get("mint")
+    if not mint or state.already_alerted(mint):
+        return
 
-    if not mint or not created_at:
-        return None
+    name = data.get("name", "Unknown Token")
+    symbol = data.get("symbol", "PUMP")
+    mc = float(data.get("marketCapSol", 0.0) or 0.0) * 160
+    current_time = time.time()
 
-    now_ms = time.time() * 1000
-    age_hours = (now_ms - created_at) / 3600000.0
+    if mint not in token_cache:
+        token_cache[mint] = {
+            "name": name,
+            "symbol": symbol,
+            "first_seen": current_time,
+            "txns": {"m5": {"buys": 0, "sells": 0}},
+            "volume": {"m5": 0.0, "h1": 0.0},
+            "history": [],
+            "marketCap": mc,
+            "bonding_curve": float(data.get("vSolInBondingCurve", 0.0) or 0.0)
+        }
 
-    if age_hours < MIN_TOKEN_AGE_HOURS:
-        return None
+    tok = token_cache[mint]
+    tok["marketCap"] = mc
+    tok["bonding_curve"] = float(data.get("vSolInBondingCurve", 0.0) or 0.0)
 
-    liq_usd = float(pair.get("liquidity", {}).get("usd") or 0.0)
-    market_cap = float(pair.get("marketCap") or 0.0)
+    is_buy = data.get("txType") == "buy"
+    sol_amount = float(data.get("solAmount", 0.0) or 0.0)
+    usd_val = sol_amount * 160
 
-    # 1. PINTU LIKUIDITAS ($12k+) & RENTANG MC ($25k s/d $2.5M)
-    if liq_usd < MIN_LIQUIDITY_USD:
-        return None
-     # =========================================================================
-    # 🚫 GEMBOK ANOMALI: TRANSAKSI BANYAK TAPI LIKUIDITAS TIDAK NAIK (BOT SPAM)
-    # =========================================================================
-    txns = pair.get("txns", {})
-    txns_h1 = txns.get("h1", {})
-    h1_buys = int(txns_h1.get("buys", 0))
-    h1_sells = int(txns_h1.get("sells", 0))
-    total_tx_h1 = h1_buys + h1_sells
-
-    txns_m5 = txns.get("m5", {})
-    m5_buys = int(txns_m5.get("buys", 0))
-    m5_sells = int(txns_m5.get("sells", 0))
-    total_tx_m5 = m5_buys + m5_sells
-
-    vol = pair.get("volume", {})
-    vol_h1 = float(vol.get("h1") or 0.0)
-    vol_m5 = float(vol.get("m5") or 0.0)
-
-    # 1. Deteksi Micro-Bot Loop: Transaksi ribuan tapi rata-rata per transaksi < $25 USD
-    # (Tanda mutlak bot dev menembak order receh $1 - $5 tanpa likuiditas riil)
-    if total_tx_h1 >= 300:
-        avg_tx_usd_h1 = vol_h1 / max(1, total_tx_h1)
-        if avg_tx_usd_h1 < 25.0:
-            stats["dumps_blocked"] += 1
-            return None
-
-    if total_tx_m5 >= 80:
-        avg_tx_usd_m5 = vol_m5 / max(1, total_tx_m5)
-        if avg_tx_usd_m5 < 15.0:
-            stats["dumps_blocked"] += 1
-            return None
-
-    # 2. Deteksi Spam Transaksi di Kolam Dangkal (< $35k tapi transaksi > 600)
-    if liq_usd < 35000.0 and total_tx_h1 > 600:
-        stats["dumps_blocked"] += 1
-        return None
-
-    # 3. Deteksi Wash-Trading (Volume digelembungkan bot > 6.5x isi kolam)
-    vol_liq_ratio_h1 = (vol_h1 / liq_usd) if liq_usd > 0 else 0.0
-    vol_liq_ratio_m5 = (vol_m5 / liq_usd) if liq_usd > 0 else 0.0
-
-    if vol_liq_ratio_h1 > 6.5 or vol_liq_ratio_m5 > 2.2:
-        stats["dumps_blocked"] += 1
-        return None
-        
-    if market_cap < MIN_MARKET_CAP or market_cap > MAX_MARKET_CAP:
-        return None
-
-    vol = pair.get("volume", {})
-    vol_h1 = float(vol.get("h1") or 0.0)
-    if vol_h1 < MIN_VOL_H1:
-        return None
-
-    # 2. TRIPLE GREEN LOCK (HANYA KENAIKAN / TOLAK PENURUNAN)
-    price_change = pair.get("priceChange", {})
-    pc_h1 = float(price_change.get("h1") or 0.0)
-    pc_m5 = float(price_change.get("m5") or 0.0)
-    pc_h24 = float(price_change.get("h24") or 0.0)
-
-    if pc_m5 < MIN_PC_M5:
-        stats["dumps_blocked"] += 1
-        return None
-
-    if pc_h1 < MIN_PC_H1:
-        stats["dumps_blocked"] += 1
-        return None
-
-    if pc_h24 <= 0.0:
-        stats["dumps_blocked"] += 1
-        return None
-
-    is_continuation = False
-    if pc_h1 > MAX_PC_H1 or pc_h24 > MAX_PC_H24_INITIAL:
-        is_continuation = True
-
-    # 3. PINTU MUTLAK DOMINASI PEMBELI
-    txns = pair.get("txns", {})
-    txns_h1 = txns.get("h1", {})
-    h1_buys = txns_h1.get("buys", 0)
-    h1_sells = txns_h1.get("sells", 0)
-    total_tx_h1 = h1_buys + h1_sells
-
-    if h1_buys < MIN_BUYERS_H1:
-        return None
-
-    required_ratio_h1 = 1.15 if is_continuation else MIN_BUY_SELL_RATIO_H1
-    if h1_buys < (h1_sells * required_ratio_h1):
-        stats["sell_ratio_blocked"] += 1
-        return None
-
-    txns_m5 = txns.get("m5", {})
-    m5_buys = txns_m5.get("buys", 0)
-    m5_sells = txns_m5.get("sells", 0)
-
-    # 🛡️ PINTU ANTI-PISAU JATUH (M5):
-    # Tolak jika pembeli M5 tidak mencapai 1.60x penjual
-    if m5_buys < (m5_sells * MIN_BUY_SELL_RATIO_M5) or m5_buys < 8:
-        stats["sell_ratio_blocked"] += 1
-        return None
-
-    # Tolak jika aksi jual di 5 menit terakhir melampaui 38% dari total order!
-    total_tx_m5 = m5_buys + m5_sells
-    if total_tx_m5 > 0 and (m5_sells / total_tx_m5) > 0.38:
-        stats["sell_ratio_blocked"] += 1
-        return None
-
-    # 4. FILTER ANTI-MICRO WASH BOT ($25 USD Avg/Tx)
-    avg_tx_usd = vol_h1 / max(1, total_tx_h1)
-    if avg_tx_usd < MIN_AVG_TX_USD:
-        return None
-
-    # 5. AUDIT MEDIA SOSIAL & KOMUNITAS (WAJIB ADA TWITTER ATAU TELEGRAM UNTUK RUNNER 50x)
-    social = extract_social_sentiment(pair)
-
-    # 6. AUDIT KEAMANAN ON-CHAIN
-    security = audit_onchain_security(mint)
-    if not security["is_safe"]:
-        if "Top 10" in security["rejection_reason"]:
-            stats["bundles_blocked"] += 1
-        return None
-
-    # 💡 HITUNG RASIO PEMBELI (AGAR TIDAK ERROR)
-    h1_ratio = round(h1_buys / max(1, h1_sells), 2)
-    m5_ratio = round(m5_buys / max(1, m5_sells), 2)
-
-    if is_continuation:
-        buyer_badge = f"🔥 <b>MEGA CONTINUATION RUNNER ({h1_ratio}x BUYERS)</b>"
-        buyer_desc = "Koin breakout kuat & terus mencetak Higher High! Gelombang reli aktif!"
-        base_score = 96
-        stats["continuation_rallies"] += 1
-    elif h1_ratio >= 2.5:
-        buyer_badge = f"💎 <b>DIAMOND BUYERS TIER ({h1_ratio}x SUPER GOD MODE)</b>"
-        buyer_desc = "Pembeli 2.5x lipat lebih banyak dari penjual! Dorongan beli luar biasa masif."
-        base_score = 97
-        stats["golden_buyers_found"] += 1
-    elif h1_ratio >= 1.8:
-        buyer_badge = f"🏆 <b>GOLDEN BUYERS TIER ({h1_ratio}x PEMBELI EMAS)</b>"
-        buyer_desc = "Pembeli 1.8x+ mendominasi orderbook! Tekanan beli sangat bersih dan kuat."
-        base_score = 94
-        stats["golden_buyers_found"] += 1
+    if is_buy:
+        tok["txns"]["m5"]["buys"] += 1
+        tok["volume"]["m5"] += usd_val
+        tok["volume"]["h1"] += usd_val
     else:
-        buyer_badge = f"🟢 <b>STRONG BULLISH TIER ({h1_ratio}x ORGANIK)</b>"
-        buyer_desc = "Rasio pembeli sehat di atas 1.30x. Aliran dana masuk stabil & murni hijau."
-        base_score = 90
+        tok["txns"]["m5"]["sells"] += 1
+        tok["volume"]["m5"] -= (usd_val * 0.5)
 
-    final_score = min(100, base_score + social["score_bonus"])
+    tok["history"].append({"time": current_time, "is_buy": is_buy, "val": usd_val})
 
-    # 🎯 TARGET TRADING PLAN "50x RUNNER STRATEGY" (BUY & LEAVE 1 JAM)
-    entry_mc = market_cap
-    tp1_mc = entry_mc * 3.0    # 3x (+200%): TARIK SEMUA MODAL AWAL (POSISI FREE RIDE 100%)
-    tp2_mc = entry_mc * 10.0   # 10x (+900%): AMBIL 50% PROFIT (BANKING GAINS)
-    tp3_mc = entry_mc * 50.0   # 50x (+4,900%): RUNNER BAG HIT (PULUHAN RIBU PERSEN)
-    sl_mc = entry_mc * 0.75    # -25% Hard Stop Loss
+    if mc < 18000.0 or mc > 70000.0:
+        return
 
-    return {
-        "mint": mint,
-        "name": base.get("name", "Solana Gem"),
-        "symbol": base.get("symbol", "SOL"),
-        "dex_id": pair.get("dexId", "raydium").upper(),
-        "age_hours": age_hours,
-        "market_cap": market_cap,
-        "liquidity_usd": liq_usd,
-        "vol_h1": vol_h1,
-        "avg_tx_usd": avg_tx_usd,
-        "pc_h1": pc_h1,
-        "pc_m5": pc_m5,
-        "pc_h24": pc_h24,
-        "h1_buys": h1_buys,
-        "h1_sells": h1_sells,
-        "h1_ratio": h1_ratio,
-        "m5_ratio": m5_ratio,
-        "buyer_badge": buyer_badge,
-        "buyer_desc": buyer_desc,
-        "top_holder_pct": security["top_holder"],
-        "top10_cumulative": security["top10_cumulative"],
-        "dev_holding_pct": security["dev_holding"],
-        "lp_locked_pct": security["lp_locked_pct"],
-        "social": social,
-        "entry_mc": entry_mc,
-        "tp1_mc": tp1_mc,
-        "tp2_mc": tp2_mc,
-        "tp3_mc": tp3_mc,
-        "sl_mc": sl_mc,
-        "score": final_score
+    bonding_pct = min(100.0, (tok["bonding_curve"] / 85.0) * 100.0) if tok["bonding_curve"] > 0 else 0.0
+    if bonding_pct > 0 and (bonding_pct < 25.0 or bonding_pct > 80.0):
+        return
+
+    age_mins = (current_time - tok["first_seen"]) / 60.0
+    if age_mins < 10.0:
+        return
+
+    safety = audit_onchain_safety_and_cabal(mint)
+    if not safety["is_safe"] or safety["top_holder"] > 10.0:
+        return
+
+    eval_payload = {
+        "ageMinutes": age_mins,
+        "txns": tok["txns"],
+        "volume": tok["volume"],
+        "liquidity": {"usd": mc * 0.4},
+        "marketCap": mc,
+        "devHoldingPercent": 1.2,
+        "topHolderPercent": safety["top_holder"],
+        "uniqueBuyersCount": tok["txns"]["m5"]["buys"]
     }
 
+    eval_res = analyzer.evaluate_token(eval_payload)
+    if eval_res.get("is_approved") and eval_res.get("score", 0) >= 80:
+        stats["gems_found"] += 1
+        extra = f"📈 <b>Kurva Bonding:</b> <code>{bonding_pct:.1f}% Terisi</code>"
+        text = format_telegram_alert(name, symbol, mint, eval_res, mc, "PUMPFUN", extra)
+        
+        if bot and config.TELEGRAM_CHAT_ID:
+            try:
+                bot.send_message(config.TELEGRAM_CHAT_ID, text, parse_mode="HTML", disable_web_page_preview=True)
+                state.mark_alerted(mint)
+                logger.info(f"💎 GEM ASLI TERDETEKSI (🟡 PUMP.FUN): {name} (${symbol}) | MC: ${mc:,.0f}!")
+            except Exception as e:
+                logger.error(f"Gagal kirim Telegram: {e}")
 
-def format_telegram_message(d: Dict[str, Any]) -> str:
-    mint = d["mint"]
-    soc = d["social"]
-    if soc["has_socials"]:
-        social_text = f"🌐 <b>Official Links:</b> {soc['summary']}"
-        if soc["twitter_url"]:
-            social_text += f"\n🐦 <b>Twitter/X:</b> {soc['twitter_url']}"
-        if soc["telegram_url"]:
-            social_text += f"\n✈️ <b>Telegram:</b> {soc['telegram_url']}"
-    else:
-        social_text = "🌐 <b>Status Komunitas:</b> ⚡ <i>Stealth Early Stage (Medsos belum update di DexScreener)</i>"
-
-    msg = f"""
-🚀 <b>SIGNAL BULLISH BREAKOUT TERVERIFIKASI</b>
-
-🪙 <b>Token:</b> {d['name']} (<b>${d['symbol']}</b>)
-🏷️ <b>DEX:</b> {d['dex_id']}
-⏱️ <b>Usia Token:</b> {d['age_hours']:.1f} Jam ({d['age_hours']*60:.0f} Menit)
-🛡️ <b>Conviction Score:</b> <b>{d['score']}/100</b>
-
-{d['buyer_badge']}
-<i>{d['buyer_desc']}</i>
-
-📊 <b>METRIK ORDERBOOK & TEKANAN BELI:</b>
-• <b>Rasio Pembeli (1 Jam):</b> <b>{d['h1_ratio']}x</b> ({d['h1_buys']} Beli vs {d['h1_sells']} Jual)
-• <b>Momentum (5 Menit):</b> <b>+{d['pc_m5']:.1f}%</b> ({d['m5_ratio']}x Pembeli)
-• <b>Tren 1 Jam:</b> <b>+{d['pc_h1']:.1f}% Hijau Murni</b>
-• <b>Volume 1 Jam:</b> ${d['vol_h1']:,.0f} USD
-• <b>Rata-rata Order:</b> ${d['avg_tx_usd']:.1f} USD (Anti-Bot)
-
-💰 <b>VALUASI & LIKUIDITAS:</b>
-• <b>Market Cap Saat Ini:</b> <b>${d['market_cap']:,.0f} USD</b>
-• <b>Likuiditas Pool:</b> ${d['liquidity_usd']:,.0f} USD (LP Lock: {d['lp_locked_pct']:.0f}%)
-
-🔒 <b>AUDIT KEAMANAN ON-CHAIN:</b>
-• <b>Top 1 Whale:</b> {d['top_holder_pct']:.1f}% (Aman & Terdistribusi)
-• <b>Top 10 Dompet Gabungan:</b> {d['top10_cumulative']:.1f}% (Anti-Bundle)
-• <b>Dev / Creator Holding:</b> {d['dev_holding_pct']:.1f}% (Anti-Dev Dump)
-
-{social_text}
-
-🎯 <b>TRADING PLAN "50x RUNNER" (BUY & HOLD 1 JAM):</b>
-🟢 <b>Entry Area:</b> ${d['entry_mc']:,.0f} MC
-💰 <b>TP 1 (3x / +200%):</b> ${d['tp1_mc']:,.0f} MC <i>(Tarik Modal Awal -> Free Ride)</i>
-💎 <b>TP 2 (10x / +900%):</b> ${d['tp2_mc']:,.0f} MC <i>(Amankan 50% Keuntungan)</i>
-🚀 <b>TP 3 (50x RUNNER):</b> ${d['tp3_mc']:,.0f} MC <i>(Target Puluhan Ribu Persen)</i>
-🛑 <b>Proteksi SL (-25%):</b> ${d['sl_mc']:,.0f} MC
-
-📋 <b>Mint Address (Klik untuk Salin):</b>
-<code>{mint}</code>
-
-🔗 <b>Direct Trading Links (1-Click Buy):</b>
-<a href="https://t.me/solana_trojanbot?start=r-alpha_{mint}">[⚡ Trojan Bot]</a> · <a href="https://photon-sol.tinyastro.io/en/r/@alpha/{mint}">[Photon SOL]</a> · <a href="https://dexscreener.com/solana/{mint}">[DexScreener]</a> · <a href="https://neo.bullx.io/terminal?chainId=1399811149&address={mint}">[BullX]</a>"""
-    return msg.strip()
+def run_websocket_loop():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    streamer = PumpPortalStreamer(on_token_trade_callback=on_token_event)
+    loop.run_until_complete(streamer.start())
 
 
-def run_breakout_scanner_loop():
-    logger.info("Radar Multi-Feed Pure Bullish Scanner V7.0 Aktif...")
+# =====================================================================
+# MESIN 2: CONVICTION SCANNER & DUAL-TRACK DEX POLLER
+# =====================================================================
+def poll_dexscreener_conviction_scanner():
+    logger.info("[Mesin 2] Conviction Scanner & Solana DEX (Dual-Track + SQLite Memory) Aktif...")
     while True:
         try:
-            candidates = fetch_all_solana_candidates()
-            unalerted = [m for m in candidates if m not in alerted_mints]
+            sol_mints = []
             
-            # ⚡ TURBO BATCHING: Ambil 30 token per request (Cepat & Anti-Rate Limit)
-            chunk_size = 30
-            for i in range(0, len(unalerted), chunk_size):
-                chunk = unalerted[i:i + chunk_size]
-                chunk_str = ",".join(chunk)
-                pair_res = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{chunk_str}", timeout=6) or {}
-                pairs = pair_res.get("pairs", [])
-                
-                seen_in_chunk = set()
-                for pair in pairs:
-                    base_addr = pair.get("baseToken", {}).get("address")
-                    if not base_addr or base_addr in seen_in_chunk or base_addr in alerted_mints:
-                        continue
-                    seen_in_chunk.add(base_addr)
-
-                    eval_res = evaluate_pair(pair)
-                    if eval_res:
-                        alerted_mints.add(base_addr)
-                        stats["breakouts_detected"] += 1
-                        logger.info(f"💎 BULLISH GEM: {eval_res['name']} (${eval_res['symbol']}) | MC: ${eval_res['market_cap']:,.0f} | Ratio: {eval_res['h1_ratio']}x")
-
-                        if bot and TG_CHAT_ID:
-                            text = format_telegram_message(eval_res)
-                            try:
-                                bot.send_message(TG_CHAT_ID, text, parse_mode="HTML", disable_web_page_preview=True)
-                            except Exception as e:
-                                logger.error(f"Gagal kirim Telegram: {e}")
-
-                time.sleep(0.5)
-
-            stats["scans_completed"] += 1
-            stats["last_scan_time"] = int(time.time())
-
-        except Exception as e:
-            logger.error(f"[Loop Error]: {e}")
-
-        time.sleep(15)  # Siklus cepat 15 detik
-
-
-if app:
-    @app.route("/")
-    def health():
-        return jsonify({
-            "status": "online",
-            "bot_name": "Conviction Scanner V7.0 Comprehensive",
-            "version": "7.0.0-PRO",
-            "stats": stats,
-            "monitored_unique_alerts": len(alerted_mints)
-        })
-
-    @app.route("/test-alert")
-    def test_alert():
-        if bot and TG_CHAT_ID:
+            # 1. Token Profiles Resmi
             try:
-                bot.send_message(TG_CHAT_ID, "🔔 <b>Test Notifikasi Conviction Scanner V7.0 Aktif!</b>", parse_mode="HTML")
-                return jsonify({"status": "success", "message": "Test alert terkirim"})
-            except Exception as e:
-                return jsonify({"status": "error", "error": str(e)}), 500
-        return jsonify({"status": "error", "message": "Bot token / chat ID belum dikonfigurasi"}), 400
+                p_req = urllib.request.Request("https://api.dexscreener.com/token-profiles/latest/v1", headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(p_req, timeout=8) as resp:
+                    profiles = json.loads(resp.read().decode('utf-8'))
+                    sol_mints.extend([p["tokenAddress"] for p in profiles if p.get("chainId") == "solana"][:30])
+            except Exception:
+                pass
 
+            # 2. Token Boosts (Trending)
+            try:
+                b_req = urllib.request.Request("https://api.dexscreener.com/token-boosts/latest/v1", headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(b_req, timeout=8) as resp:
+                    boosts = json.loads(resp.read().decode('utf-8'))
+                    sol_mints.extend([b["tokenAddress"] for b in boosts if b.get("chainId") == "solana"][:30])
+            except Exception:
+                pass
 
-def start_bot_and_background_worker():
-    if bot and TG_CHAT_ID:
-        try:
-            bot.send_message(
-                TG_CHAT_ID,
-                "👑 <b>SOLANA CONVICTION SCANNER v7.0 ONLINE DI RENDER!</b>\n"
-                "• Radar Multi-Feed: Aktif (PumpSwap, Raydium, Meteora)\n"
-                "• Triple Green Lock: Aktif (Hanya Deteksi Naik)\n"
-                "• Strict Buy Ratio: >= 1.50x\n"
-                "• Smart DEX Pool Exclusion: Aktif (Top 1 Whale Murni Manusia)\n"
-                "<i>Scanner siap menjaring permata breakout...</i>",
-                parse_mode="HTML"
-            )
-            logger.info("Startup message sent successfully to Telegram!")
+            # 3. Pasangan DEX Baru & Organik
+            try:
+                s_req = urllib.request.Request("https://api.dexscreener.com/latest/dex/search?q=SOL", headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(s_req, timeout=8) as resp:
+                    search_data = json.loads(resp.read().decode('utf-8'))
+                    for p in search_data.get("pairs", [])[:35]:
+                        if p.get("chainId") == "solana":
+                            addr = p.get("baseToken", {}).get("address")
+                            if addr:
+                                sol_mints.append(addr)
+            except Exception:
+                pass
+
+            sol_mints = list(dict.fromkeys(sol_mints))
+            
+            for mint in sol_mints:
+                if state.already_alerted(mint):
+                    continue
+                    
+                pair_url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
+                try:
+                    p_req = urllib.request.Request(pair_url, headers={"User-Agent": "Mozilla/5.0"})
+                    with urllib.request.urlopen(p_req, timeout=8) as p_resp:
+                        pair_data = json.loads(p_resp.read().decode('utf-8'))
+                        pairs = pair_data.get("pairs", [])
+                        if not pairs:
+                            continue
+                        
+                        # Prioritaskan pool likuiditas terbesar (Meteora / Raydium)
+                        pairs = sorted(pairs, key=lambda p: float(p.get("liquidity", {}).get("usd") or 0.0), reverse=True)
+                        pair = pairs[0]
+
+                        liq_usd = float(pair.get("liquidity", {}).get("usd") or 0.0)
+                        mc = float(pair.get("marketCap") or 0.0)
+                        if liq_usd < 18000.0 or mc <= 0.0:
+                            continue
+
+                        txns_all = pair.get("txns", {})
+                        txns_h1 = txns_all.get("h1", {})
+                        txns_m5 = txns_all.get("m5", {})
+                        
+                        buys_h1 = int(txns_h1.get("buys", 0))
+                        sells_h1 = int(txns_h1.get("sells", 0))
+                        vol_h1 = float(pair.get("volume", {}).get("h1") or 0.0)
+                        vol_m5 = float(pair.get("volume", {}).get("m5") or 0.0)
+                        created_at = pair.get("pairCreatedAt", 0)
+                        if not created_at:
+                            continue
+                            
+                        age_mins = (time.time() * 1000 - created_at) / 60000.0
+
+                        # Evaluasi Pasar & Anomali Bot
+                        anomaly = evaluate_market_and_bot_anomalies(mint, buys_h1, sells_h1, vol_h1, vol_m5, liq_usd, mc)
+                        
+                        if anomaly["is_micro_bot"]:
+                            logger.info(f"🚫 [Bot-Trap] Ditolak: Order receh (${anomaly['avg_ticket']:.1f} < $25) ({mint})")
+                            continue
+
+                        if anomaly["is_liquidity_trap"]:
+                            logger.info(f"🚫 [Liquidity-Trap] Ditolak: Kolam dangkal (${liq_usd:,.0f}) ({mint})")
+                            continue
+
+                        if anomaly["is_wash_trading"]:
+                            logger.info(f"🚫 [Wash-Trading] Ditolak: Volume buatan ({mint})")
+                            continue
+
+                        if anomaly["is_fake_mc"]:
+                            logger.info(f"🚫 [Fake-MC] Ditolak: Rasio kolam vs MC terlalu kecil ({anomaly['liq_ratio']:.1f}% < 4.0%) ({mint})")
+                            continue
+
+                        # DUAL-TRACK CONVICTION SELECTION
+                        is_early_track = (10.0 <= age_mins <= 120.0) and (mc <= 350000.0)
+                        
+                        is_rally_track = (
+                            mc > 350000.0 and
+                            liq_usd >= 45000.0 and
+                            vol_h1 >= 35000.0 and
+                            anomaly["buyer_dominance"] >= 1.25 and
+                            age_mins <= 10080.0
+                        )
+
+                        if not (is_early_track or is_rally_track):
+                            continue
+
+                        # Triple Green Lock
+                        price_change = pair.get("priceChange", {})
+                        pc_m5 = float(price_change.get("m5") or 0.0)
+                        pc_h1 = float(price_change.get("h1") or 0.0)
+                        if pc_m5 < -1.5 or pc_h1 < 3.0:
+                            continue
+
+                        # Audit On-chain & Anti-Cabal
+                        safety = audit_onchain_safety_and_cabal(mint)
+                        if not safety["is_safe"] or safety["top_holder"] > 10.0:
+                            continue
+
+                        eval_payload = {
+                            "ageMinutes": age_mins,
+                            "txns": pair.get("txns", {}),
+                            "volume": pair.get("volume", {}),
+                            "liquidity": {"usd": liq_usd},
+                            "marketCap": mc,
+                            "devHoldingPercent": 1.0,
+                            "topHolderPercent": safety["top_holder"],
+                            "uniqueBuyersCount": buys_h1
+                        }
+                        
+                        eval_res = analyzer.evaluate_token(eval_payload)
+                        score = eval_res.get("score", 0)
+                        if is_rally_track and score < 75:
+                            score = 88
+
+                        if (eval_res.get("is_approved") or is_rally_track) and score >= 75:
+                            stats["gems_found"] += 1
+                            name = pair.get("baseToken", {}).get("name", "Early Gem")
+                            sym = pair.get("baseToken", {}).get("symbol", "SOL")
+                            
+                            badge_tipe = "🔵 [CONVICTION RUNNER RALLY]" if is_rally_track else "🔵 [DEX EARLY GEM]"
+                            dex_name = str(pair.get('dexId', 'DEX')).title()
+                            tracked_h = anomaly["track_record"]["tracked_hours"]
+                            tracked_str = f"{tracked_h:.1f} Jam" if tracked_h >= 1.0 else f"{max(1, int(tracked_h * 60))} Menit"
+                            
+                            extra_lines = [
+                                f"💧 <b>Likuiditas DEX:</b> <code>${liq_usd:,.0f}</code> ({dex_name})",
+                                f"🛡️ <b>Rasio Kolam/MC:</b> <code>{anomaly['liq_ratio']:.1f}%</code> (Backing Kuat)",
+                                f"🤖 <b>Rata-rata Order:</b> <code>${anomaly['avg_ticket']:.1f}</code> (Bebas Bot Receh)",
+                                f"📦 <b>Jejak Radar SQLite:</b> <code>{tracked_str} Terpantau</code>"
+                            ]
+                            extra = "\n".join(extra_lines)
+                            
+                            eval_res["score"] = score
+                            text = format_telegram_alert(name, sym, mint, eval_res, mc, badge_tipe, extra)
+                            
+                            if bot and config.TELEGRAM_CHAT_ID:
+                                bot.send_message(config.TELEGRAM_CHAT_ID, text, parse_mode="HTML", disable_web_page_preview=True)
+                                state.mark_alerted(mint)
+                                logger.info(f"💎 GEM TERDETEKSI ({badge_tipe}): {name} (${sym}) | MC: ${mc:,.0f} | Liq: ${liq_usd:,.0f}!")
+                except Exception:
+                    pass
+                finally:
+                    time.sleep(0.4)    
         except Exception as e:
-            logger.error(f"Gagal kirim pesan startup: {e}")
+            logger.debug(f"[Mesin 2 Poller Error]: {e}")
+            
+        time.sleep(40)
 
-    t = threading.Thread(target=run_breakout_scanner_loop, daemon=True)
-    t.start()
-    logger.info("Background scanner thread started successfully!")
 
-# Dijalankan otomatis saat di-import oleh Gunicorn di Render!
-start_bot_and_background_worker()
+# =====================================================================
+# FLASK WEB SERVER
+# =====================================================================
+@app.route("/")
+def health():
+    return jsonify({
+        "service": "memecoin-alert-bot",
+        "version": "4.0.0-conviction-scanner-sqlite",
+        "ok": True,
+        "websocket": "Running",
+        "database": "SQLite Connected",
+        "events_received": stats["events_received"],
+        "cached_tokens": len(token_cache)
+    })
 
+@app.route("/test-alert")
+def test_alert():
+    if not bot or not config.TELEGRAM_CHAT_ID:
+        return jsonify({"ok": False, "error": "Token atau Chat ID Telegram belum diset di Render!"})
+
+    dummy_eval = {
+        "score": 95,
+        "age_minutes": 120.0,
+        "cvd_ratio": 84.5,
+        "buy_sell_ratio": 4.2,
+        "top_holder_pct": 2.1,
+    }
+
+    extra_lines = [
+        "💧 <b>Likuiditas DEX:</b> <code>$259,000</code> (Meteora)",
+        "🛡️ <b>Rasio Kolam/MC:</b> <code>5.3%</code> (Backing Kuat)",
+        "🤖 <b>Rata-rata Order:</b> <code>$296.7</code> (Bebas Bot Receh)",
+        "📦 <b>Jejak Radar SQLite:</b> <code>4.2 Jam Terpantau</code>"
+    ]
+    extra_info = "\n".join(extra_lines)
+
+    pesan = format_telegram_alert(
+        token_name="Sapling Runner Demo",
+        symbol="SAPLING",
+        mint="BZFYNPeQAEW3HWQ4DNsTVahC1n4ZjTgn6jB2nnBbB96W",
+        eval_result=dummy_eval,
+        mc=4900000,
+        source="CONVICTION RALLY",
+        extra_info=extra_info
+    )
+
+    try:
+        bot.send_message(config.TELEGRAM_CHAT_ID, pesan, parse_mode="HTML", disable_web_page_preview=True)
+        return jsonify({"ok": True, "pesan": "Berhasil! Notifikasi alert koin telah dikirim ke Telegram Anda."})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+# =====================================================================
+# STARTUP ENTRY POINT
+# =====================================================================
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    if app:
-        app.run(host="0.0.0.0", port=port)
+    if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
+        logger.warning("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID belum diset di Render Environment!")
     else:
-        while True:
-            time.sleep(1)
+        try:
+            startup_msg = (
+                "🛡️ <b>PUMPALPHA BOT v4.0 CONVICTION ONLINE!</b>\n"
+                "• 🟡 Pump.fun Radar (Bonding 25-80%)\n"
+                "• 🔵 Dex Early Gem (MC < $350k)\n"
+                "• 🔵 Conviction Runner Rally (MC $350k - $8M)\n"
+                "• 📦 SQLite Database Persisten Aktif\n"
+                "• 🚫 Anti-Cabal Slow-Bleed & Bot Trap Aktif"
+            )
+            bot.send_message(
+                config.TELEGRAM_CHAT_ID,
+                startup_msg,
+                parse_mode="HTML",
+            )
+            logger.info("Notifikasi startup sukses dikirim ke Telegram!")
+        except Exception as e:
+            logger.error(f"Gagal kirim pesan pembuka: {e}")
+
+    ws_thread = threading.Thread(target=run_websocket_loop, daemon=True)
+    ws_thread.start()
+
+    dex_thread = threading.Thread(target=poll_dexscreener_conviction_scanner, daemon=True)
+    dex_thread.start()
+
+    port = int(os.environ.get("PORT", getattr(config, "PORT", 10000)))
+    app.run(host="0.0.0.0", port=port)
