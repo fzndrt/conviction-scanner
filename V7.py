@@ -70,9 +70,10 @@ class PumpPortalStreamer:
         while True:
             try:
                 async with websockets.connect(self.uri, ping_interval=20, ping_timeout=20) as ws:
-                    payload = {"method": "subscribeNewToken"}
-                    await ws.send(json.dumps(payload))
-                    logger.info("📡 [WebSocket] Terhubung ke PumpPortal Live Trade Stream...")
+                    # Langganan Token Baru & Migrasi Raydium
+                    await ws.send(json.dumps({"method": "subscribeNewToken"}))
+                    await ws.send(json.dumps({"method": "subscribeRaydiumLiquidity"}))
+                    logger.info("📡 [WebSocket] Terhubung ke PumpPortal (New Token & Raydium Migration Stream)...")
                     
                     async for message in ws:
                         try:
@@ -215,17 +216,21 @@ def get_token_track_record(mint: str) -> dict:
 # =====================================================================
 # AUDIT ON-CHAIN & ANTI-CABAL SLOW-BLEED
 # =====================================================================
-def audit_onchain_safety_and_cabal(mint: str) -> dict:
+# =====================================================================
+# AUDIT ON-CHAIN & ANTI-CABAL DENGAN SMART REAL-PROJECT PASS
+# =====================================================================
+def audit_onchain_safety_and_cabal(mint: str, vol_h1: float = 0.0) -> dict:
     """
-    Audit On-Chain Lengkap Level Institusional:
+    Audit On-Chain Lengkap:
     1. Filter AMM/Pool Resmi (Akurat 100% menggunakan market pubkey & knownAccounts)
     2. Deteksi Keterkaitan Jaringan Dompet (On-Chain Graph Insiders & Transfer Networks)
-    3. Deteksi Pembagian Persentase Presisi & Cluster Deviasi Rapat
+    3. Aturan Khusus Koin Bintang (Total Holders > 500, Vol H1 > $50k, Insiders <= 6)
+    4. Anti Split-Wallet Robotik & Anti Cabal Slow-Bleed
     """
     try:
         url = f"https://api.rugcheck.xyz/v1/tokens/{mint}/report"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=4) as resp:
+        with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode('utf-8'))
             
             # A. Skor Risiko RugCheck
@@ -243,15 +248,24 @@ def audit_onchain_safety_and_cabal(mint: str) -> dict:
                     logger.info(f"🚫 [RugCheck] Ditolak: Bahaya Otoritas '{r.get('name')}' ({mint})")
                     return {"is_safe": False, "reason": "Contract Danger", "top_holder": 999.0}
 
-            # 🛑 C. DETEKSI KETERKAITAN DOMPET SIKLUS (ON-CHAIN GRAPH INSIDER & TRANSFER NETWORK)
+            # C. Ekstraksi Data Holder & Jaringan On-Chain
+            total_holders = int(data.get("totalHolders") or 0)
             insiders_count = int(data.get("graphInsidersDetected") or 0)
             insider_networks = data.get("insiderNetworks") or []
-            if insiders_count >= 3 or len(insider_networks) > 0:
-                net_size = insider_networks[0].get("size", insiders_count) if insider_networks else insiders_count
-                logger.info(f"🚫 [Graph-Network] Ditolak: Terdeteksi sindikat {net_size} dompet saling terhubung on-chain! ({mint})")
-                return {"is_safe": False, "reason": "Insider Graph Syndicate Detected", "top_holder": 999.0}
+            
+            # 🌟 PENGECUALIAN KOIN BINTANG / PROYEK ASLI (Seperti $Agency)
+            is_legit_community_project = (total_holders > 500 and vol_h1 >= 50000.0 and insiders_count <= 6)
 
-            # 🛑 D. Identifikasi Semua Akun Pool / AMM Resmi
+            # D. Evaluasi Jaringan Sindikat
+            if not is_legit_community_project:
+                if insiders_count >= 3 or len(insider_networks) > 0:
+                    net_size = insider_networks[0].get("size", insiders_count) if insider_networks else insiders_count
+                    logger.info(f"🚫 [Graph-Network] Ditolak: Terdeteksi sindikat {net_size} dompet saling terhubung on-chain! ({mint})")
+                    return {"is_safe": False, "reason": "Insider Graph Syndicate Detected", "top_holder": 999.0}
+            else:
+                logger.info(f"🌟 [Real-Project-Pass] Koin Proyek Nyata: {total_holders} Holders, Vol H1 ${vol_h1:,.0f}, Insider Tim Inti: {insiders_count} ({mint})")
+
+            # E. Identifikasi Kolam Likuiditas / AMM Resmi
             known_accounts = data.get("knownAccounts", {})
             pool_owners = set()
             for m in data.get("markets", []):
@@ -269,6 +283,43 @@ def audit_onchain_safety_and_cabal(mint: str) -> dict:
                 owner = str(h.get("owner", ""))
                 pct = float(h.get("pct", 0.0) or 0.0)
 
+                # Abaikan jika ini adalah Akun Pool Likuiditas
+                if owner in pool_owners or any(dex in addr.lower() for dex in ["pool", "raydium", "meteora", "pump", "openbook", "orca"]):
+                    continue
+                if pct < 85.0:
+                    non_pool_holders.append(pct)
+
+            if not non_pool_holders:
+                return {"is_safe": True, "top_holder": 0.0, "cabal_sum": 0.0}
+
+            top_1_holder = non_pool_holders[0]
+
+            # F. Batas Toleransi Top 1 Whale Bukan Pool
+            max_top1_allowed = 10.0 if is_legit_community_project else 7.5
+            if top_1_holder > max_top1_allowed:
+                logger.info(f"🚫 [Whale-Risk] Ditolak: Top 1 Holder bukan pool memegang ({top_1_holder:.1f}% > {max_top1_allowed}%) ({mint})")
+                return {"is_safe": False, "reason": "Top 1 Whale Too Heavy", "top_holder": top_1_holder}
+
+            # G. Deteksi Pembagian Persentase Kembar Robotik (>= 4 dompet kembar)
+            if len(non_pool_holders) >= 4:
+                rounded_2dec = [round(p, 2) for p in non_pool_holders]
+                counts_2dec = Counter(rounded_2dec)
+                for pct_val, freq in counts_2dec.items():
+                    if pct_val >= 0.15 and freq >= 4:
+                        logger.info(f"🚫 [Anti-Sindikat] Ditolak: Split-Wallet Terdeteksi ({freq} dompet memegang ~{pct_val}%) ({mint})")
+                        return {"is_safe": False, "reason": "Split Wallet Cluster", "top_holder": 999.0}
+
+            # H. Deteksi Cabal Akumulasi Acak Top 10 Wallet
+            max_top10_allowed = 30.0 if is_legit_community_project else 25.0
+            cabal_top10_sum = sum(non_pool_holders[:10])
+            if cabal_top10_sum > max_top10_allowed:
+                logger.info(f"🚫 [Anti-Cabal] Ditolak: Akumulasi Top 10 wallet ({cabal_top10_sum:.1f}% > {max_top10_allowed}%) ({mint})")
+                return {"is_safe": False, "reason": "Cabal Accumulation Heavy", "top_holder": top_1_holder}
+
+            return {"is_safe": True, "top_holder": top_1_holder, "cabal_sum": cabal_top10_sum}
+    except Exception:
+        pass
+    return {"is_safe": True, "top_holder": 0.0, "cabal_sum": 0.0}
                 # Abaikan akun jika terbukti merupakan Pool AMM atau Bonding Curve
                 if owner in pool_owners or any(dex in addr.lower() for dex in ["pool", "raydium", "meteora", "pump", "openbook", "orca"]):
                     continue
@@ -478,43 +529,67 @@ def run_websocket_loop():
 # =====================================================================
 # MESIN 2: CONVICTION SCANNER & DUAL-TRACK DEX POLLER
 # =====================================================================
+# =====================================================================
+# MESIN 2: CONVICTION SCANNER MULTI-DEX RADAR (250+ KOIN & ANTI PUMP-DUMP)
+# =====================================================================
 def poll_dexscreener_conviction_scanner():
-    logger.info("[Mesin 2] Conviction Scanner & Solana DEX (Dual-Track + SQLite Memory) Aktif...")
+    logger.info("🚀 [Mesin 2] Conviction Scanner Multi-DEX Radar (Raydium Official + 250+ Koin Aktif)...")
     while True:
         try:
             sol_mints = []
-            
-            # 1. Token Profiles
+
+            # 1. Multi-Channel Discovery (Search Queries Multi-DEX)
+            discovery_queries = ["SOL", "PUMP", "RAY", "METEORA", "USDC"]
+            for q in discovery_queries:
+                try:
+                    s_req = urllib.request.Request(f"https://api.dexscreener.com/latest/dex/search?q={q}", headers={"User-Agent": "Mozilla/5.0"})
+                    with urllib.request.urlopen(s_req, timeout=6) as resp:
+                        search_data = json.loads(resp.read().decode('utf-8'))
+                        for p in search_data.get("pairs", [])[:35]:
+                            if p.get("chainId") == "solana":
+                                addr = p.get("baseToken", {}).get("address")
+                                if addr:
+                                    sol_mints.append(addr)
+                except Exception:
+                    pass
+
+            # 2. DexScreener Trending Boosts & Profiles
+            for boost_url in [
+                "https://api.dexscreener.com/token-boosts/latest/v1",
+                "https://api.dexscreener.com/token-boosts/top/v1",
+                "https://api.dexscreener.com/token-profiles/latest/v1"
+            ]:
+                try:
+                    b_req = urllib.request.Request(boost_url, headers={"User-Agent": "Mozilla/5.0"})
+                    with urllib.request.urlopen(b_req, timeout=6) as resp:
+                        items = json.loads(resp.read().decode('utf-8'))
+                        for it in items[:30]:
+                            if it.get("chainId") == "solana":
+                                addr = it.get("tokenAddress")
+                                if addr:
+                                    sol_mints.append(addr)
+                except Exception:
+                    pass
+
+            # 3. Raydium Official API v3 (Direct DEX Pool List)
             try:
-                p_req = urllib.request.Request("https://api.dexscreener.com/token-profiles/latest/v1", headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(p_req, timeout=8) as resp:
-                    profiles = json.loads(resp.read().decode('utf-8'))
-                    sol_mints.extend([p["tokenAddress"] for p in profiles if p.get("chainId") == "solana"][:30])
+                ray_req = urllib.request.Request(
+                    "https://api-v3.raydium.io/pools/info/list?poolType=all&poolSortField=default&sortType=desc&pageSize=30&page=1",
+                    headers={"User-Agent": "Mozilla/5.0"}
+                )
+                with urllib.request.urlopen(ray_req, timeout=6) as resp:
+                    ray_data = json.loads(resp.read().decode('utf-8'))
+                    for pool in ray_data.get("data", {}).get("data", []):
+                        mint_a = pool.get("mintA", {}).get("address")
+                        sym_b = pool.get("mintB", {}).get("symbol", "")
+                        mint_b = pool.get("mintB", {}).get("address")
+                        t_mint = mint_a if sym_b in ["WSOL", "SOL"] else mint_b
+                        if t_mint:
+                            sol_mints.append(t_mint)
             except Exception:
                 pass
 
-            # 2. Token Boosts
-            try:
-                b_req = urllib.request.Request("https://api.dexscreener.com/token-boosts/latest/v1", headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(b_req, timeout=8) as resp:
-                    boosts = json.loads(resp.read().decode('utf-8'))
-                    sol_mints.extend([b["tokenAddress"] for b in boosts if b.get("chainId") == "solana"][:30])
-            except Exception:
-                pass
-
-            # 3. Search Pairs Baru
-            try:
-                s_req = urllib.request.Request("https://api.dexscreener.com/latest/dex/search?q=SOL", headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(s_req, timeout=8) as resp:
-                    search_data = json.loads(resp.read().decode('utf-8'))
-                    for p in search_data.get("pairs", [])[:35]:
-                        if p.get("chainId") == "solana":
-                            addr = p.get("baseToken", {}).get("address")
-                            if addr:
-                                sol_mints.append(addr)
-            except Exception:
-                pass
-
+            # Hapus duplikasi alamat (Menghasilkan ~200-300 koin unik per putaran!)
             sol_mints = list(dict.fromkeys(sol_mints))
             
             for mint in sol_mints:
@@ -524,12 +599,13 @@ def poll_dexscreener_conviction_scanner():
                 pair_url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
                 try:
                     p_req = urllib.request.Request(pair_url, headers={"User-Agent": "Mozilla/5.0"})
-                    with urllib.request.urlopen(p_req, timeout=8) as p_resp:
+                    with urllib.request.urlopen(p_req, timeout=6) as p_resp:
                         pair_data = json.loads(p_resp.read().decode('utf-8'))
                         pairs = pair_data.get("pairs", [])
                         if not pairs:
                             continue
                         
+                        # Pilih kolam likuiditas terbesar
                         pairs = sorted(pairs, key=lambda p: float(p.get("liquidity", {}).get("usd") or 0.0), reverse=True)
                         pair = pairs[0]
 
@@ -544,6 +620,8 @@ def poll_dexscreener_conviction_scanner():
                         
                         buys_h1 = int(txns_h1.get("buys", 0))
                         sells_h1 = int(txns_h1.get("sells", 0))
+                        buys_m5 = int(txns_m5.get("buys", 0))
+                        sells_m5 = int(txns_m5.get("sells", 0))
                         vol_h1 = float(pair.get("volume", {}).get("h1") or 0.0)
                         vol_m5 = float(pair.get("volume", {}).get("m5") or 0.0)
                         created_at = pair.get("pairCreatedAt", 0)
@@ -552,44 +630,45 @@ def poll_dexscreener_conviction_scanner():
                             
                         age_mins = (time.time() * 1000 - created_at) / 60000.0
 
+                        # Evaluasi Anomali & Bot Manipulasi
                         anomaly = evaluate_market_and_bot_anomalies(mint, buys_h1, sells_h1, vol_h1, vol_m5, liq_usd, mc)
+                        if anomaly["is_micro_bot"] or anomaly["is_liquidity_trap"] or anomaly["is_wash_trading"] or anomaly["is_fake_mc"]:
+                            continue
+
+                        # 🛑 FILTER ANTI PUMP & DUMP CLIMAX (Naik Ribuan % Lalu Mati)
+                        price_change = pair.get("priceChange", {})
+                        pc_m5 = float(price_change.get("m5") or 0.0)
+                        pc_h1 = float(price_change.get("h1") or 0.0)
+                        pc_h6 = float(price_change.get("h6") or 0.0)
+                        pc_h24 = float(price_change.get("h24") or 0.0)
+
+                        if (pc_h24 > 750.0 or pc_h6 > 400.0):
+                            if sells_m5 > buys_m5 or pc_m5 < -3.5:
+                                logger.info(f"🚫 [Climax-Dump] Ditolak: Koin pompa ekstrem dan mulai dibuang ({mint})")
+                                continue
+
+                        # 📉 PELEMASAN FILTER RETRACEMENT M5 (Izinkan koreksi sehat hingga -6.5%)
+                        if pc_m5 < -6.5 or pc_h1 < 2.0:
+                            continue
+
+                        # Dual-Track Jalur:
+                        # Jalur 1: Early Gem (10m - 180m, MC $20k - $350k)
+                        is_early_track = (10.0 <= age_mins <= 180.0) and (mc <= 350000.0)
                         
-                        if anomaly["is_micro_bot"]:
-                            logger.info(f"🚫 [Bot-Trap] Ditolak: Order receh (${anomaly['avg_ticket']:.1f} < $25) ({mint})")
-                            continue
-
-                        if anomaly["is_liquidity_trap"]:
-                            logger.info(f"🚫 [Liquidity-Trap] Ditolak: Kolam dangkal (${liq_usd:,.0f}) ({mint})")
-                            continue
-
-                        if anomaly["is_wash_trading"]:
-                            logger.info(f"🚫 [Wash-Trading] Ditolak: Volume buatan ({mint})")
-                            continue
-
-                        if anomaly["is_fake_mc"]:
-                            logger.info(f"🚫 [Fake-MC] Ditolak: Rasio kolam vs MC kecil ({anomaly['liq_ratio']:.1f}% < 4.0%) ({mint})")
-                            continue
-
-                        is_early_track = (10.0 <= age_mins <= 120.0) and (mc <= 350000.0)
-                        
+                        # Jalur 2: Conviction Runner Rally (MC $350k - $12M, Volume H1 Aktif)
                         is_rally_track = (
                             mc > 350000.0 and
-                            liq_usd >= 45000.0 and
-                            vol_h1 >= 35000.0 and
-                            anomaly["buyer_dominance"] >= 1.25 and
+                            liq_usd >= 40000.0 and
+                            vol_h1 >= 30000.0 and
+                            anomaly["buyer_dominance"] >= 1.15 and
                             age_mins <= 10080.0
                         )
 
                         if not (is_early_track or is_rally_track):
                             continue
 
-                        price_change = pair.get("priceChange", {})
-                        pc_m5 = float(price_change.get("m5") or 0.0)
-                        pc_h1 = float(price_change.get("h1") or 0.0)
-                        if pc_m5 < -1.5 or pc_h1 < 3.0:
-                            continue
-
-                        safety = audit_onchain_safety_and_cabal(mint)
+                        # 🛑 Audit On-Chain Lengkap (Dengan vol_h1 untuk Smart Real-Project Pass)
+                        safety = audit_onchain_safety_and_cabal(mint, vol_h1=vol_h1)
                         if not safety["is_safe"] or safety["top_holder"] > 10.0:
                             continue
 
@@ -637,11 +716,11 @@ def poll_dexscreener_conviction_scanner():
                 except Exception:
                     pass
                 finally:
-                    time.sleep(0.4)    
+                    time.sleep(0.3)    
         except Exception as e:
             logger.debug(f"[Mesin 2 Poller Error]: {e}")
             
-        time.sleep(40)
+        time.sleep(25)
 
 # =====================================================================
 # FLASK WEB SERVER
