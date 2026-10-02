@@ -50,11 +50,9 @@ if TG_TOKEN:
 # ============================================================================
 # 👑 KONFIGURASI "50x RUNNER / BUY & HOLD" (ULTRA CONVICTION FILTER)
 # ============================================================================
-MIN_TOKEN_AGE_HOURS = 0.12          # Usia minimal ~7 menit (Lolos fase sniping bot)
-MIN_LIQUIDITY_USD = 18000.0         # Minimal Likuiditas $18.000 USD (Kolam tebal & aman ditinggal)
-MIN_MARKET_CAP = 35000.0            # ⭐ Min MC $35.000 USD (Dasar breakout sehat)
-MAX_MARKET_CAP = 180000.0           # ⭐ MAKSIMAL MC $180.000 USD! (Wajib beli di bawah agar ruang 50x terbuka!)
-MIN_VOL_H1 = 20000.0                # Volume 1 jam wajib deras minimal $20,000 USD
+MIN_LIQUIDITY_USD = 18000.0          # 🛡️ Naikkan ke $18.000 USD (Tolak kolam dangkal)
+MIN_MARKET_CAP = 35000.0             # 🛡️ Naikkan ke $35.000 USD
+MAX_MARKET_CAP = 300000.0            # 🛡️ Batasi di $180.000 USD (Cegah beli koin yang sudah pucuk)
 
 # 🟢 TRIPLE GREEN LOCK & RUNNER MOMENTUM
 MIN_PC_M5 = 3.0                     # Menit ini (M5) WAJIB HIJAU >= +3.0% (Tolak koin lesu/dump)
@@ -120,7 +118,7 @@ def audit_onchain_security(mint: str) -> Dict[str, Any]:
         if data:
             score = data.get("score", 0)
             res["score"] = score
-            if score > 750:
+            if score > 450:
                 res["is_safe"] = False
                 res["rejection_reason"] = f"RugCheck Score Bahaya: {score}"
                 return res
@@ -200,7 +198,18 @@ def audit_onchain_security(mint: str) -> Dict[str, Any]:
                         counted_holders += 1
 
             res["top10_cumulative"] = round(cumulative_pct, 1)
-
+# 🛡️ DETEKSI KLUSTER DOMPET PEMECAH SUPLAI (SPLIT WALLETS DETECTOR)
+            # Jika dev memecah suplai ke dompet-dompet klaster berukuran sama (misal 4+ dompet @ ~0.4%)
+            non_pool_pcts = [float(h.get("pct", 0.0)) for h in top_holders if float(h.get("pct", 0.0)) < 85.0]
+            if len(non_pool_pcts) >= 5:
+                rounded_pcts = [round(p, 1) for p in non_pool_pcts[:12]]
+                from collections import Counter
+                counts = Counter(rounded_pcts)
+                for pct_val, freq in counts.items():
+                    if pct_val >= 0.3 and freq >= 4:
+                        res["is_safe"] = False
+                        res["rejection_reason"] = f"Sindikat Split-Wallet: {freq} dompet memegang suplai identik ~{pct_val}%"
+                        return res
             if res["dev_holding"] > MAX_DEV_HOLDING_PCT:
                 res["is_safe"] = False
                 res["rejection_reason"] = f"Dev memegang {res['dev_holding']:.1f}% suplai"
@@ -330,6 +339,51 @@ def evaluate_pair(pair: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     # 1. PINTU LIKUIDITAS ($12k+) & RENTANG MC ($25k s/d $2.5M)
     if liq_usd < MIN_LIQUIDITY_USD:
         return None
+     # =========================================================================
+    # 🚫 GEMBOK ANOMALI: TRANSAKSI BANYAK TAPI LIKUIDITAS TIDAK NAIK (BOT SPAM)
+    # =========================================================================
+    txns = pair.get("txns", {})
+    txns_h1 = txns.get("h1", {})
+    h1_buys = int(txns_h1.get("buys", 0))
+    h1_sells = int(txns_h1.get("sells", 0))
+    total_tx_h1 = h1_buys + h1_sells
+
+    txns_m5 = txns.get("m5", {})
+    m5_buys = int(txns_m5.get("buys", 0))
+    m5_sells = int(txns_m5.get("sells", 0))
+    total_tx_m5 = m5_buys + m5_sells
+
+    vol = pair.get("volume", {})
+    vol_h1 = float(vol.get("h1") or 0.0)
+    vol_m5 = float(vol.get("m5") or 0.0)
+
+    # 1. Deteksi Micro-Bot Loop: Transaksi ribuan tapi rata-rata per transaksi < $25 USD
+    # (Tanda mutlak bot dev menembak order receh $1 - $5 tanpa likuiditas riil)
+    if total_tx_h1 >= 300:
+        avg_tx_usd_h1 = vol_h1 / max(1, total_tx_h1)
+        if avg_tx_usd_h1 < 25.0:
+            stats["dumps_blocked"] += 1
+            return None
+
+    if total_tx_m5 >= 80:
+        avg_tx_usd_m5 = vol_m5 / max(1, total_tx_m5)
+        if avg_tx_usd_m5 < 15.0:
+            stats["dumps_blocked"] += 1
+            return None
+
+    # 2. Deteksi Spam Transaksi di Kolam Dangkal (< $35k tapi transaksi > 600)
+    if liq_usd < 35000.0 and total_tx_h1 > 600:
+        stats["dumps_blocked"] += 1
+        return None
+
+    # 3. Deteksi Wash-Trading (Volume digelembungkan bot > 6.5x isi kolam)
+    vol_liq_ratio_h1 = (vol_h1 / liq_usd) if liq_usd > 0 else 0.0
+    vol_liq_ratio_m5 = (vol_m5 / liq_usd) if liq_usd > 0 else 0.0
+
+    if vol_liq_ratio_h1 > 6.5 or vol_liq_ratio_m5 > 2.2:
+        stats["dumps_blocked"] += 1
+        return None
+        
     if market_cap < MIN_MARKET_CAP or market_cap > MAX_MARKET_CAP:
         return None
 
