@@ -320,53 +320,7 @@ def audit_onchain_safety_and_cabal(mint: str, vol_h1: float = 0.0) -> dict:
     except Exception:
         pass
     return {"is_safe": True, "top_holder": 0.0, "cabal_sum": 0.0}
-                # Abaikan akun jika terbukti merupakan Pool AMM atau Bonding Curve
-                if owner in pool_owners or any(dex in addr.lower() for dex in ["pool", "raydium", "meteora", "pump", "openbook", "orca"]):
-                    continue
-                if pct < 85.0:
-                    non_pool_holders.append(pct)
-
-            if not non_pool_holders:
-                return {"is_safe": True, "top_holder": 0.0, "cabal_sum": 0.0}
-
-            top_1_holder = non_pool_holders[0]
-
-            # 🛑 E. Top 1 Dompet Manusia Terlalu Dominan (> 7.0%)
-            if top_1_holder > 7.0:
-                logger.info(f"🚫 [Whale-Risk] Ditolak: Top 1 Holder bukan pool memegang ({top_1_holder:.1f}% > 7.0%) ({mint})")
-                return {"is_safe": False, "reason": "Top 1 Whale Too Heavy", "top_holder": top_1_holder}
-
-            # 🛑 F. Deteksi Pembagian Persentase Kembar (>= 4 dompet kembar)
-            if len(non_pool_holders) >= 4:
-                rounded_2dec = [round(p, 2) for p in non_pool_holders]
-                counts_2dec = Counter(rounded_2dec)
-                for pct_val, freq in counts_2dec.items():
-                    if pct_val >= 0.15 and freq >= 4:
-                        logger.info(f"🚫 [Anti-Sindikat] Ditolak: Split-Wallet Terdeteksi ({freq} dompet memegang persis ~{pct_val}%) ({mint})")
-                        return {"is_safe": False, "reason": "Split Wallet Cluster", "top_holder": 999.0}
-
-            # 🛑 G. Deteksi Distribusi Rapat Antar Dompet Berurutan (Cluster Variance < 0.008%)
-            if len(non_pool_holders) >= 6:
-                sorted_h = sorted(non_pool_holders)
-                tight_cluster_count = 0
-                for i in range(len(sorted_h) - 1):
-                    if abs(sorted_h[i] - sorted_h[i+1]) <= 0.008:
-                        tight_cluster_count += 1
-                if tight_cluster_count >= 4:
-                    logger.info(f"🚫 [Anti-Cluster] Ditolak: Pola Distribusi Wallet Robotik ({tight_cluster_count}+ dompet berjarak <0.008%) ({mint})")
-                    return {"is_safe": False, "reason": "Tight Distribution Cluster", "top_holder": 999.0}
-
-            # 🛑 H. Deteksi Cabal Akumulasi Acak Top 10 Wallet
-            cabal_top10_sum = sum(non_pool_holders[:10])
-            if cabal_top10_sum > 25.0:
-                logger.info(f"🚫 [Anti-Cabal] Ditolak: Akumulasi Top 10 wallet non-pool ({cabal_top10_sum:.1f}% > 25%) ({mint})")
-                return {"is_safe": False, "reason": "Cabal Accumulation Heavy", "top_holder": top_1_holder}
-
-            return {"is_safe": True, "top_holder": top_1_holder, "cabal_sum": cabal_top10_sum}
-    except Exception:
-        pass
-    return {"is_safe": True, "top_holder": 0.0, "cabal_sum": 0.0}
-
+                
 def evaluate_market_and_bot_anomalies(mint: str, buys_h1: int, sells_h1: int, vol_h1: float, vol_m5: float, liq_usd: float, mc: float) -> dict:
     record_token_snapshot(mint, buys_h1, sells_h1, vol_h1, liq_usd, mc)
     track_record = get_token_track_record(mint)
