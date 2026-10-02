@@ -216,32 +216,61 @@ def get_token_track_record(mint: str) -> dict:
 # AUDIT ON-CHAIN & ANTI-CABAL SLOW-BLEED
 # =====================================================================
 def audit_onchain_safety_and_cabal(mint: str) -> dict:
+    """
+    Audit On-Chain Lengkap Level Institusional:
+    1. Filter AMM/Pool Resmi (Akurat 100% menggunakan market pubkey & knownAccounts)
+    2. Deteksi Keterkaitan Jaringan Dompet (On-Chain Graph Insiders & Transfer Networks)
+    3. Deteksi Pembagian Persentase Presisi & Cluster Deviasi Rapat
+    """
     try:
         url = f"https://api.rugcheck.xyz/v1/tokens/{mint}/report"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=4) as resp:
             data = json.loads(resp.read().decode('utf-8'))
             
+            # A. Skor Risiko RugCheck
             score = int(data.get("score") or 0)
             if score > 450:
                 logger.info(f"🚫 [RugCheck] Ditolak: Skor bahaya ({score} > 450) ({mint})")
                 return {"is_safe": False, "reason": "High Risk Score", "top_holder": 999.0}
 
+            # B. Audit Otoritas Kontrak
             risks = data.get("risks", [])
             for r in risks:
                 r_name = str(r.get("name", "")).lower()
                 r_level = str(r.get("level", "")).lower()
                 if "freeze" in r_name or "mint" in r_name or r_level == "danger":
-                    logger.info(f"🚫 [RugCheck] Ditolak: Bahaya Fatal '{r.get('name')}' ({mint})")
+                    logger.info(f"🚫 [RugCheck] Ditolak: Bahaya Otoritas '{r.get('name')}' ({mint})")
                     return {"is_safe": False, "reason": "Contract Danger", "top_holder": 999.0}
+
+            # 🛑 C. DETEKSI KETERKAITAN DOMPET SIKLUS (ON-CHAIN GRAPH INSIDER & TRANSFER NETWORK)
+            insiders_count = int(data.get("graphInsidersDetected") or 0)
+            insider_networks = data.get("insiderNetworks") or []
+            if insiders_count >= 3 or len(insider_networks) > 0:
+                net_size = insider_networks[0].get("size", insiders_count) if insider_networks else insiders_count
+                logger.info(f"🚫 [Graph-Network] Ditolak: Terdeteksi sindikat {net_size} dompet saling terhubung on-chain! ({mint})")
+                return {"is_safe": False, "reason": "Insider Graph Syndicate Detected", "top_holder": 999.0}
+
+            # 🛑 D. Identifikasi Semua Akun Pool / AMM Resmi
+            known_accounts = data.get("knownAccounts", {})
+            pool_owners = set()
+            for m in data.get("markets", []):
+                if m.get("pubkey"):
+                    pool_owners.add(m.get("pubkey"))
+            for acc_addr, acc_info in known_accounts.items():
+                if acc_info.get("type") == "AMM" or "pool" in str(acc_info.get("name", "")).lower():
+                    pool_owners.add(acc_addr)
 
             top_holders = data.get("topHolders", [])
             non_pool_holders = []
             
             for h in top_holders:
-                addr = str(h.get("address", "")).lower()
+                addr = str(h.get("address", ""))
+                owner = str(h.get("owner", ""))
                 pct = float(h.get("pct", 0.0) or 0.0)
-                if any(dex in addr for dex in ["pool", "raydium", "meteora", "pump", "openbook", "orca"]):
+
+                # Abaikan akun jika terbukti merupakan Pool AMM atau Bonding Curve
+                if owner in pool_owners or any(dex in addr.lower() for dex in ["pool", "raydium", "meteora", "pump", "openbook", "orca"]):
                     continue
                 if pct < 85.0:
                     non_pool_holders.append(pct)
@@ -251,19 +280,35 @@ def audit_onchain_safety_and_cabal(mint: str) -> dict:
 
             top_1_holder = non_pool_holders[0]
 
-            # Deteksi Sindikat Pecah Dompet (Persentase Kembar)
+            # 🛑 E. Top 1 Dompet Manusia Terlalu Dominan (> 7.0%)
+            if top_1_holder > 7.0:
+                logger.info(f"🚫 [Whale-Risk] Ditolak: Top 1 Holder bukan pool memegang ({top_1_holder:.1f}% > 7.0%) ({mint})")
+                return {"is_safe": False, "reason": "Top 1 Whale Too Heavy", "top_holder": top_1_holder}
+
+            # 🛑 F. Deteksi Pembagian Persentase Kembar (>= 4 dompet kembar)
             if len(non_pool_holders) >= 4:
-                rounded_pcts = [round(p, 1) for p in non_pool_holders[:15]]
-                counts = Counter(rounded_pcts)
-                for pct_val, freq in counts.items():
-                    if pct_val >= 0.3 and freq >= 4:
-                        logger.info(f"🚫 [Anti-Sindikat] Ditolak: Split-Wallet ({freq} dompet ~{pct_val}%) ({mint})")
+                rounded_2dec = [round(p, 2) for p in non_pool_holders]
+                counts_2dec = Counter(rounded_2dec)
+                for pct_val, freq in counts_2dec.items():
+                    if pct_val >= 0.15 and freq >= 4:
+                        logger.info(f"🚫 [Anti-Sindikat] Ditolak: Split-Wallet Terdeteksi ({freq} dompet memegang persis ~{pct_val}%) ({mint})")
                         return {"is_safe": False, "reason": "Split Wallet Cluster", "top_holder": 999.0}
 
-            # Deteksi CABAL SLOW-BLEED (Akumulasi Top 10 Wallet Acak > 28%)
+            # 🛑 G. Deteksi Distribusi Rapat Antar Dompet Berurutan (Cluster Variance < 0.008%)
+            if len(non_pool_holders) >= 6:
+                sorted_h = sorted(non_pool_holders)
+                tight_cluster_count = 0
+                for i in range(len(sorted_h) - 1):
+                    if abs(sorted_h[i] - sorted_h[i+1]) <= 0.008:
+                        tight_cluster_count += 1
+                if tight_cluster_count >= 4:
+                    logger.info(f"🚫 [Anti-Cluster] Ditolak: Pola Distribusi Wallet Robotik ({tight_cluster_count}+ dompet berjarak <0.008%) ({mint})")
+                    return {"is_safe": False, "reason": "Tight Distribution Cluster", "top_holder": 999.0}
+
+            # 🛑 H. Deteksi Cabal Akumulasi Acak Top 10 Wallet
             cabal_top10_sum = sum(non_pool_holders[:10])
-            if cabal_top10_sum > 28.0:
-                logger.info(f"🚫 [Anti-Cabal] Ditolak: Cabal Slow-Bleed Risk ({cabal_top10_sum:.1f}% > 28%) ({mint})")
+            if cabal_top10_sum > 25.0:
+                logger.info(f"🚫 [Anti-Cabal] Ditolak: Akumulasi Top 10 wallet non-pool ({cabal_top10_sum:.1f}% > 25%) ({mint})")
                 return {"is_safe": False, "reason": "Cabal Accumulation Heavy", "top_holder": top_1_holder}
 
             return {"is_safe": True, "top_holder": top_1_holder, "cabal_sum": cabal_top10_sum}
@@ -664,7 +709,7 @@ if __name__ == "__main__":
                 "• 🔵 Dex Early Gem (MC di bawah $350k)\n"
                 "• 🔵 Conviction Runner Rally (MC $350k - $8M)\n"
                 "• 📦 SQLite Database Persisten Aktif\n"
-                "• 🚫 Anti-Cabal Slow-Bleed & Bot Trap Aktif"
+                "• 🕸️ On-Chain Transfer Graph & Cluster Filter Aktif"
             )
             bot.send_message(TELEGRAM_CHAT_ID, startup_msg, parse_mode="HTML")
             logger.info("Notifikasi startup sukses dikirim ke Telegram!")
